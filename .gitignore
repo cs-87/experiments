@@ -52,6 +52,9 @@ out/
 output/
 outputs/
 
+#Videos directory
+videos/
+
 # Logs
 *.log
 logs/
