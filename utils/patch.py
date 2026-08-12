@@ -77,6 +77,39 @@ def non_overlapping_points(kps):
 
 
 
+def select_candidate(half, pool):
+    """
+    Pick which patch of `half` to mark on this frame, given the spots already marked.
+
+    Returns (patch, y, x, centre) or None if `half` is empty. `pool` is a list of
+    (x, y) centres already used during the current bit run; the first candidate not
+    suppressed by one of them wins. When every candidate is suppressed the pool is
+    cleared and the walk restarts, so a long bit run keeps rotating instead of parking
+    on half[0] -- a 128px block pixelated in one place for 100+ frames is exactly the
+    artefact this rotation exists to avoid.
+
+    The choice depends only on this half's own history, never on the watermark bit.
+    That is what lets detect() rebuild the identical sequence from the original video
+    without knowing the bits it is trying to recover -- see detect() for why the
+    per-run flush is load-bearing. Any change here must be mirrored on both sides.
+    """
+    if not half:
+        return None
+
+    # Two passes at most: one to walk the list, one after a clear. A third could not
+    # find anything the second did not.
+    for _ in range(2):
+        for patch, y, x in half:
+            cx, cy = (x[0] + x[1]) // 2, (y[0] + y[1]) // 2
+            if not any(abs(px - cx) < SQUARE_SIZE and abs(py - cy) < SQUARE_SIZE
+                       for px, py in pool):
+                return patch, y, x, (cx, cy)
+
+            pool.clear()
+
+    return None
+
+
 def get_two_halves(frame):
     """
     Get two halves of the frame for watermark embedding.
@@ -111,8 +144,8 @@ def get_best_patch_in_two_halves(frame):
 
     kps = non_overlapping_points(kps)
 
-    first_half = None
-    second_half = None
+    first_half = []
+    second_half = []
 
     for kp in kps:
 
@@ -121,11 +154,15 @@ def get_best_patch_in_two_halves(frame):
         if patch is None:
             continue
         if x[1] <= width//2:
-            first_half = (patch, y, x)
+            first_half.append((patch, y, x))
         elif x[0] > width//2:
-            second_half = (patch, y, x)
+            second_half.append((patch, y, x))
 
-        if first_half is not None and second_half is not None:
-            return first_half,second_half
+    return first_half, second_half
 
-    return None, None, None
+
+'''
+def get_best_patch_in_two_halves(frame):
+    H,W = frame.shape
+    return (get_patch(W//2 - SQUARE_SIZE,H//2-SQUARE_SIZE//2,frame),), (get_patch(W//2,H//2-SQUARE_SIZE//2,frame),)
+'''
