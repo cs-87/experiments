@@ -46,6 +46,7 @@ venv.bak/
 *.mkv
 *.flv
 *.webm
+*.png
 
 # Output directory
 out/

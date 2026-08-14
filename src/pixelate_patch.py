@@ -3,17 +3,20 @@ from utils.video import Video_IO
 import utils.dwt as dwt
 import utils.dct as dct
 from utils.bit import get_bit_string, BIT_LENGTH, get_integer
-from utils.patch import SQUARE_SIZE, get_best_patch_in_two_halves, select_candidate
+from utils.patch import SQUARE_SIZE, get_best_patch_in_two_halves, select_candidate, get_middle_patches
+from utils.patch import get_half_patches_grid
 from utils.pixelation import detect_pixelation
 from utils.lightglue import LightGluePatchMatcher, warp_patch
 from tqdm import tqdm
 import numpy as np
 import cv2
-import random 
+import random
 
 from utils.scene_change import detect_scene_change
+from impairment_view import Impairment_View
+from utils.transcode_n import transcode_n_times
 
-INPUT = "videos/15_sec_source.mp4"
+INPUT = "4_sec_source.mp4"
 OUTPUT = "./out/wmk.mp4"
 
 LEAKED = "rencode_2.mp4"
@@ -30,11 +33,149 @@ ALPHA = 20
 # drift apart -- the detector scores against this exact grid period.
 PIXEL_SIZE = 2
 
-coeff_1 = (4,5)
-coeff_2 = (5,4)
+# 256px patch -> 512px in the panel, so a PIXEL_SIZE cell reads as 4px instead of 2.
+PANEL_SCALE = 2
+
+# Grey gutter between the two halves, so a diff that runs bright up to its edge cannot be
+# read as spilling into the other half.
+DIVIDER_PX = 4
+DIVIDER_GREY = 90
+
+# Brightness multiplier on the diff. The mark is genuinely faint -- measured on
+# out/wmk.mp4 the marked patch's diff runs 6-10 mean against 3 for the unmarked one -- so
+# at 1:1 both halves render as near-black and the view is unreadable.
+#
+# Deliberately a fixed gain and not a per-frame autoscale: normalising each half by its
+# own maximum would stretch the unmarked half's codec noise to full range and make it look
+# exactly as marked as the other side, destroying the one comparison this view is for.
+DIFF_GAIN = 4
 
 
-def embed(video_path, output_path, watermark:int):
+class PIXELATE_IMP_VIEW(Impairment_View):
+    """
+    Renders, per frame, imp - org over both of embed()'s candidate patches: the left
+    half's patch on the left, the right half's on the right.
+
+    embed() rotates its mark around a 256px grid, so a fixed patch pair -- what
+    DWT_DCT_IMP_VIEW can get away with -- would land on an unmarked region on most frames.
+    This replays embed()'s own selection instead: same grid, same scorer, same pool. The
+    panel therefore always shows the patch carrying the mark beside the one that is not,
+    and the bit is whichever side is brighter.
+    """
+
+    def __init__(self, src_path, imp_path, out_dir):
+        super().__init__(src_path, imp_path, out_dir)
+
+        # One pool per half, because the view renders both halves without knowing the bit.
+        # Within a bit run embed() marked the same half on every frame, so that half's
+        # pool matches embed()'s exactly while the other's is a harmless what-if.
+        # Divergence accumulates only across runs, and the per-run flush erases it.
+        self.pool_first, self.pool_second = [], []
+
+    def _select_both_halves(self, src_y):
+        """
+        Replay embed()'s choice for both halves of this frame.
+
+        Returns (sel_first, sel_second); either is None when its half yields no candidate.
+        Each pool is advanced as soon as its own half produces one, matching embed(),
+        which pushed whenever the half it was marking was non-empty -- skipping a push
+        here would leave that pool a frame behind for the rest of the run.
+        """
+        first_half, second_half = get_half_patches_grid(src_y)
+
+        sel_first = select_candidate(
+            first_half, self.pool_first, key=pixelation_residual)
+        sel_second = select_candidate(
+            second_half, self.pool_second, key=pixelation_residual)
+
+        if sel_first is not None:
+            self.pool_first.append(sel_first[3])
+        if sel_second is not None:
+            self.pool_second.append(sel_second[3])
+
+        return sel_first, sel_second
+
+    def _patch_diff(self, selection, imp_y):
+        """
+        imp - org over the selected patch, brightened by DIFF_GAIN, or None when that half
+        had no candidate.
+
+        absdiff rather than a plain subtraction: both planes are uint8 and the difference
+        goes both ways, so a raw subtraction would wrap every negative sample to ~255 and
+        render noise as the brightest thing in the panel. Left unthresholded -- the base
+        class's threshold of 30 sits well above the mark's own amplitude (pixelation_residual
+        measures 2-5 mean) and would erase exactly what this view exists to show.
+        """
+        if selection is None:
+            return None
+
+        patch_src, y, x, _ = selection
+
+        diff = cv2.absdiff(imp_y[y[0]:y[1], x[0]:x[1]], patch_src)
+
+        # convertScaleAbs saturates at 255; a plain multiply would wrap the brightest
+        # samples back to black.
+        return diff
+
+    def _compose_panel(self, left_diff, right_diff):
+        """Left half of the canvas is the left patch's diff, right half the right's."""
+        size = SQUARE_SIZE
+
+        panel = np.zeros((size, size * 2 + DIVIDER_PX), dtype=np.uint8)
+        panel[:, size:size + DIVIDER_PX] = DIVIDER_GREY
+
+        for diff, x0 in ((left_diff, 0), (right_diff, size + DIVIDER_PX)):
+
+            # A half with no candidate stays black. The frame is still written, so the
+            # PNG sequence keeps its one-to-one alignment with the video.
+            if diff is None:
+                continue
+
+            # NEAREST, or the upscale interpolates away the block edges this view is for:
+            # at PIXEL_SIZE 2 a cell is a single interpolation step wide.
+            panel[:, x0:x0 + size] = cv2.threshold(
+                diff,
+                30,
+                255,
+                cv2.THRESH_BINARY
+            )[1]
+
+        return panel
+
+    def get_frame_diff(self):
+
+        src_frame = self.get_source_frame()
+        if src_frame is None:
+            return None
+
+        imp_frame = self.get_imp_frame()
+        if imp_frame is None:
+            return None
+
+        # get_source_frame/get_imp_frame already hand back YUV. Converting again here
+        # would treat Y/U/V as B/G/R and mix chroma into the plane the mark lives in.
+        src_y = src_frame[:, :, 0]
+        imp_y = imp_frame[:, :, 0]
+
+        # The patch coordinates are derived from the source frame, so the impaired frame
+        # has to be on the same grid before they can crop the same region out of it.
+        imp_y = cv2.resize(imp_y, (src_y.shape[1], src_y.shape[0]))
+
+        # Mirrors embed()'s flush. The pool is what makes the mark rotate within a run,
+        # so replaying the rotation means replaying the clear at each run boundary too.
+        if self.frame_index % TEMP_REDUNDANCY == 0:
+            self.pool_first.clear()
+            self.pool_second.clear()
+
+        sel_first, sel_second = self._select_both_halves(src_y)
+
+        return self._compose_panel(
+            self._patch_diff(sel_first, imp_y),
+            self._patch_diff(sel_second, imp_y),
+        )
+
+
+def embed(video_path, output_path, watermark: int):
 
     bit_string, length = get_bit_string(watermark)
     video_io = Video_IO(video_path)
@@ -47,13 +188,15 @@ def embed(video_path, output_path, watermark:int):
     # without knowing the bits.
     pool = []
     prv_frame = None
-    for i in tqdm(range(frame_count),total=frame_count, unit="frame", desc="embedding"):
+    for i in tqdm(range(frame_count), total=frame_count, unit="frame", desc="embedding"):
         frame = video_io.read_frame()
         if frame is None:
             break
 
+        scene_change = False
+
         if prv_frame != None:
-            scene_change = detect_scene_change(frame1=frame,frame2=prv_frame)
+            scene_change = detect_scene_change(frame1=frame, frame2=prv_frame)
 
         if i % TEMP_REDUNDANCY == 0:
             pool.clear()
@@ -62,16 +205,18 @@ def embed(video_path, output_path, watermark:int):
 
         bit = int(bit_string[bit_index])
 
-        first_half,second_half = get_best_patch_in_two_halves(frame.y)
+        first_half, second_half = get_half_patches_grid(frame.y)
 
         half = first_half if bit == 1 else second_half
 
-        selection = select_candidate(half, pool)
+        selection = select_candidate(half, pool, key=pixelation_residual)
 
         if selection is not None:
             patch, y, x, centre = selection
             wmk_frame_y = frame.y.copy()
-            wmk_frame_y[y[0]:y[1], x[0]:x[1]] = pixelate_region(patch)
+            pixel_size = PIXEL_SIZE if not scene_change else PIXEL_SIZE*2
+            wmk_frame_y[y[0]:y[1], x[0]:x[1]
+                        ] = pixelate_region(patch, pixel_size)
             frame.set_y(wmk_frame_y)
             pool.append(centre)
             count += 1
@@ -91,7 +236,7 @@ def pixelate_region(img, pixel_size=PIXEL_SIZE):
 
     pixel_size: approximate size of each pixel block.
     """
-    h,w = img.shape[:2]
+    h, w = img.shape[:2]
 
     # Downsample
     small = cv2.resize(
@@ -110,136 +255,41 @@ def pixelate_region(img, pixel_size=PIXEL_SIZE):
     return pixelated
 
 
-def detect(watermark_path,org_video_path, bit_length=BIT_LENGTH, block_size=PIXEL_SIZE):
+def pixelation_residual(patch, pixel_size=PIXEL_SIZE):
     """
-    Recover the embedded watermark from a (possibly re-encoded) leaked video.
+    Mean |patch - pixelate_region(patch)|: the energy this patch would lose to the
+    embedder, and therefore the amplitude of the mark it can carry.
 
-    Needs the original video, not as a reference to subtract, but to recompute the
-    keypoints -- and therefore the candidate patches -- that embed() chose from. It is
-    also used to rescale temp_redundancy when the leak was re-encoded at a different
-    frame rate, matching dwt_dct.detect.
+    Used to rank candidates in select_candidate. SIFT's own (size, response) order is a
+    poor proxy: it ranks by blob scale, which is uncorrelated with how much sub-block
+    detail there is for a PIXEL_SIZE grid to destroy. Pick a patch with little of it and
+    the mark is quantised away by the first encoder that touches it -- measured on
+    4_sec_source, the best candidate carried 4.91 mean residual and cleared the
+    detector's floor by +0.215 after six generations of x264, while the worst carried
+    2.24 and cleared it by +0.013.
 
-    block_size: grid period to score against. Left as None it is auto-detected once
-    from the first frame and then held fixed. Detecting per half would be wrong: the
-    two halves would be scored on different grids, and the comparison below only means
-    something if both sides answer the same question.
+    Ranking by this took frame-vote accuracy from 91.7% to 95.8% over the same six
+    generations, which was the difference between the 22-bit payload failing on one
+    flipped bit and decoding cleanly.
 
-    Each frame is decided by comparing the two halves against each other rather than
-    against a fixed threshold. Both halves went through the same encoder and the same
-    scene, so a relative comparison cancels bitrate and content effects that would
-    otherwise swamp an absolute score. This only works if we score the patch embed()
-    actually marked -- scoring the top keypoint instead lands on an unmarked patch on
-    most frames and the comparison degenerates to a coin flip.
+    Reads only the original frame, so detect() reproduces the ordering exactly.
     """
-    wmk_io = Video_IO(watermark_path)
-
-    org_io = Video_IO(org_video_path)
-    temp_redundancy = TEMP_REDUNDANCY * (wmk_io.frame_count // org_io.frame_count)
-    if temp_redundancy == 0:
-        temp_redundancy = 1
-
-    bit_array = [[] for _ in range(bit_length)]
-    frames_read = 0
-
-    # One pool per half, mirroring embed()'s single pool. Both are advanced on every
-    # frame regardless of how the vote goes, which is what makes the replay independent
-    # of the bits: within a run the bit is constant, so embed() marked the same half on
-    # all of its frames and that half's pool matches exactly, while the other half's is
-    # a harmless what-if. Divergence accumulates only across runs -- embed() never
-    # advanced the unmarked half -- and the flush at each run boundary erases it.
-    pool_first, pool_second = [], []
-
-    #lightglue_matcher = LightGluePatchMatcher()
-
-    for i in tqdm(range(wmk_io.frame_count), desc=f"detecting:{watermark_path}"):
-        frame_og = org_io.read_frame()
-        frame = wmk_io.read_frame()
-        if frame is None or frame_og is None:
-            break
-        frames_read += 1
-
-        if i % temp_redundancy == 0:
-            pool_first.clear()
-            pool_second.clear()
-
-        bit_index = (i // temp_redundancy) % bit_length
+    p = patch.astype(np.float32)
+    return float(np.abs(p - pixelate_region(patch, pixel_size).astype(np.float32)).mean())
 
 
-        #homography = lightglue_matcher.compute_homography(frame_og.y, frame.y)
-
-        homography = np.eye(3, dtype=np.float32)
-
-        first_half,second_half = get_best_patch_in_two_halves(frame_og.y)
-
-        sel_first = select_candidate(first_half, pool_first)
-        sel_second = select_candidate(second_half, pool_second)
-
-        # Advance each pool as soon as its own half yields a candidate, before any of
-        # the bail-outs below. embed() advanced its pool whenever the half it was
-        # marking was non-empty, so skipping a push here for an unrelated reason (the
-        # other half empty, a warp off the edge) would leave this half's history one
-        # entry behind for the rest of the run.
-        if sel_first is not None:
-            pool_first.append(sel_first[3])
-        if sel_second is not None:
-            pool_second.append(sel_second[3])
-
-        if sel_first is None or sel_second is None:
-            continue
-
-        (x1, y1), (x2, y2) = sel_first[3], sel_second[3]
-
-        wrapped_first = warp_patch(frame.y, x1, y1, homography, SQUARE_SIZE)
-        wrapped_second = warp_patch(frame.y, x2, y2, homography, SQUARE_SIZE)
-
-        if wrapped_first is None or wrapped_second is None:
-            continue
-
-        left = detect_pixelation(wrapped_first, block_size=block_size)
-        right = detect_pixelation(wrapped_second, block_size=block_size)
-
-        # embed() pixelates the first (left) half for a 1 and the second for a 0.
-        if left.confidence > right.confidence:
-            bit_array[bit_index].append(1)
-        elif left.confidence < right.confidence:
-            bit_array[bit_index].append(0)
-
-    wmk_io.release()
-    org_io.release()
-
-    bit_str = ""
-    for votes in bit_array:
-        diff = votes.count(1) - votes.count(0)
-        if diff > 0:
-            bit_str += "1"
-        elif diff < 0:
-            bit_str += "0"
-        else:
-            bit_str += "?"
-
-    # A short clip cannot carry every bit: only frames_read // temp_redundancy bit
-    # slots were ever embedded, so trust no more than that many.
-    if frames_read < temp_redundancy * bit_length:
-        expected_length = frames_read // temp_redundancy
-    else:
-        expected_length = bit_length
-
-    decoded = bit_str[:expected_length]
-    print(f"votes: {bit_str}  decoded: {decoded}  slots carried: {expected_length}")
-
-    if not decoded or "?" in decoded:
-        print("undecided slots, watermark not recoverable")
-        return None
-
-    watermark = get_integer(decoded, expected_length)
-    print(watermark)
-    return watermark
+def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
+    impv = PIXELATE_IMP_VIEW(INPUT, imp_path, out_dir)
+    impv.start()
+    impv.release()
 
 
 if __name__ == "__main__":
 
-    embed(video_path=INPUT, output_path=OUTPUT, watermark=87108710)
-    import subprocess
+    # embed(video_path=INPUT, output_path=OUTPUT, watermark=ZEROS)
 
-    subprocess.run(["bash", "utils/compress.sh",OUTPUT,"out.mp4","6"], check=True)
-    detect(watermark_path=OUTPUT, org_video_path=INPUT)
+    # detect(watermark_path=OUTPUT, org_video_path=INPUT)
+
+    # transcode_n_times(OUTPUT, "pixelate", 6)
+
+    get_frame_imp_analysis(imp_path="pixelate/transcoded_6.mp4")

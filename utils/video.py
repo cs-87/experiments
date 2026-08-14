@@ -55,6 +55,14 @@ class Video_IO():
 
     def release(self):
         self.cap.release()
+        # The writer is created lazily by write_frame, so it may not exist. Releasing it
+        # here is what flushes the moov atom: without this the output mp4 stays
+        # unreadable until the interpreter exits and GC finalises it, which breaks any
+        # caller that writes a video and then reads it back in the same process.
+        out = getattr(self, "out", None)
+        if out is not None:
+            out.release()
+            self.out = None
 
     def write_frame(self, frame, output_path):
         if frame.frame_number == 0:
