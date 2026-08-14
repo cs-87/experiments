@@ -3,3 +3,6 @@ scipy>=1.7.0
 numpy>=1.21.0
 PyWavelets>=1.2.0
 matplotlib>=3.5.0
+lightglue>=0.0
+tqdm>=4.70.0
+scikit-image>=0.25.2

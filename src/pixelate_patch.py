@@ -72,6 +72,9 @@ class PIXELATE_IMP_VIEW(Impairment_View):
         # Divergence accumulates only across runs, and the per-run flush erases it.
         self.pool_first, self.pool_second = [], []
 
+        self.matcher = LightGluePatchMatcher()
+        self.homography = np.eye(3, dtype=np.float32)
+
     def _select_both_halves(self, src_y):
         """
         Replay embed()'s choice for both halves of this frame.
@@ -111,7 +114,20 @@ class PIXELATE_IMP_VIEW(Impairment_View):
 
         patch_src, y, x, _ = selection
 
-        diff = cv2.absdiff(imp_y[y[0]:y[1], x[0]:x[1]], patch_src)
+        patch_src, y, x, _ = selection
+
+        imp_patch = warp_patch(
+            wmk_y=imp_y,
+            x=x[0],
+            y=y[0],
+            homography=self.homograhy,
+            patch_size=patch_src.shape[0],
+        )
+
+        if imp_patch is None:
+            return np.zeros((patch_src.shape[0], patch_src.shape[1]), dtype=np.uint8)
+
+        diff = cv2.absdiff(imp_patch, patch_src)
 
         # convertScaleAbs saturates at 255; a plain multiply would wrap the brightest
         # samples back to black.
@@ -159,7 +175,10 @@ class PIXELATE_IMP_VIEW(Impairment_View):
 
         # The patch coordinates are derived from the source frame, so the impaired frame
         # has to be on the same grid before they can crop the same region out of it.
-        imp_y = cv2.resize(imp_y, (src_y.shape[1], src_y.shape[0]))
+        # imp_y = cv2.resize(imp_y, (src_y.shape[1], src_y.shape[0]))
+
+        if self.frame_index == 0:
+            self.homograhy = self.matcher.compute_homography(src_y, imp_y)
 
         # Mirrors embed()'s flush. The pool is what makes the mark rotate within a run,
         # so replaying the rotation means replaying the clear at each run boundary too.
@@ -286,10 +305,11 @@ def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
 
 if __name__ == "__main__":
 
-    # embed(video_path=INPUT, output_path=OUTPUT, watermark=ZEROS)
+    embed(video_path=INPUT, output_path=OUTPUT, watermark=ONES)
 
     # detect(watermark_path=OUTPUT, org_video_path=INPUT)
 
     # transcode_n_times(OUTPUT, "pixelate", 6)
 
-    get_frame_imp_analysis(imp_path="pixelate/transcoded_6.mp4")
+    get_frame_imp_analysis(
+        imp_path=OUTPUT, out_dir="imp_view")

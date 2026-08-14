@@ -23,10 +23,10 @@ def warp_patch(
     h, w = wmk_y.shape[:2]
     half = patch_size // 2
     corners = np.array([
-        [x - half, y - half],
-        [x + half, y - half],
-        [x + half, y + half],
-        [x - half, y + half],
+        [x, y],
+        [x + patch_size, y],
+        [x + patch_size, y + patch_size],
+        [x, y + patch_size],
     ], dtype=np.float32)
     proj = cv2.perspectiveTransform(corners[None], homography)[0]
     if (
@@ -59,7 +59,8 @@ class LightGluePatchMatcher:
     """
 
     def __init__(self, device: str | None = None):
-        self._device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self._device = device or (
+            'cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"LightGluePatchMatcher using device: {self._device}")
         self._extractor, self._matcher = self._load_matcher()
 
@@ -112,7 +113,8 @@ class LightGluePatchMatcher:
         matches = result["matches"]
 
         if len(matches) < 10:
-            logger.debug(f"LightGlue: too few matches ({len(matches)}), skipping frame")
+            logger.debug(
+                f"LightGlue: too few matches ({len(matches)}), skipping frame")
             return None
 
         idx0 = matches[:, 0].cpu().numpy()
