@@ -15,13 +15,12 @@ This module adds nothing to that matcher. It only adds a scalar,
 constant-velocity (position + velocity + uncertainty) streaming filter that
 fuses each frame's already-computed candidate scores with a SOFT temporal
 prior, plus a proximity-based ranking of the output candidate region. See
-STAGE4A_REPORT.md and PRODUCTION_TEMPORAL_ALIGNER.md for the derivation and
-justification of every constant below.
+PRODUCTION_TEMPORAL_ALIGNER.md for the derivation and justification of every
+constant below.
 
 Two usage modes, both exercised in production:
 
-  # legacy / convenience -- unchanged since Stage 4A, still what
-  # evaluate_stage4_temporal.py and evaluate_stage4b_temporal_robustness.py use:
+  # legacy / convenience -- the aligner builds and owns its own VisualMatcher:
   aligner = TemporalAligner(reference_frames, k=50, radius=5)
   result = aligner.process(leak_frame_bgr)
 
@@ -51,7 +50,7 @@ from retrieval.evaluate_stage2_scores import SCORE_METHODS, scores_from_raw
 from retrieval.index import build_index
 from retrieval.lightglue_verify import Stage2Verifier
 
-# Fixed constants, stated once, never fit to any test set (see STAGE4A_REPORT.md).
+# Fixed constants, stated once, never fit to any test set (see PRODUCTION_TEMPORAL_ALIGNER.md).
 T_GATE = 3.0          # gating penalty scale, same convention as Stage 3b's local rule
 Q_PROCESS = 1.0        # process noise (frame^2) added to sigma every step
 R0_MEASUREMENT = 4.0   # measurement-noise numerator (frame^2) for a maximally confident visual pick
@@ -244,7 +243,7 @@ class TemporalAligner:
             # permanent lock with no residual signal to trigger recovery. Measured
             # directly during development: the estimate froze at frame 0 forever
             # while the frozen visual matcher's own raw predictions correctly
-            # tracked upward. See STAGE4A_REPORT.md.
+            # tracked upward. See PRODUCTION_TEMPORAL_ALIGNER.md.
             #
             # The fix: first test which candidates fall within a hard gate around
             # the PREDICTED position (independent of their visual score), then
@@ -263,7 +262,7 @@ class TemporalAligner:
             # with the trajectory -- that is a real, density-independent signal
             # of "the visual matcher currently believes something inconsistent
             # with our trajectory," which is what should accumulate toward a
-            # re-bootstrap. See STAGE4A_REPORT.md.
+            # re-bootstrap. See PRODUCTION_TEMPORAL_ALIGNER.md.
             predicted_pos = self.pos_hat + self.vel_hat
             sigma_pred = self.sigma + Q_PROCESS
             gate_radius = T_GATE * np.sqrt(sigma_pred)
