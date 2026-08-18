@@ -132,7 +132,7 @@ def get_two_halves(frame):
     # Second half: square patch from the right half of the frame
     second_half = frame[:, width // 2:width]
 
-    return [(first_half, (0, height), (0, width // 2)), (second_half, (0, height), (width//2, width))]
+    return [((first_half, (0, height), (0, width // 2)),), ((second_half, (0, height), (width//2, width)),)]
 
 
 def get_best_patch_in_two_halves(frame):
@@ -170,9 +170,29 @@ def get_best_patch_in_two_halves(frame):
     return first_half, second_half
 
 
+def get_middle_split_col(width, square_size=SQUARE_SIZE):
+    """
+    The grid line that separates the bit-1 cell from the bit-0 cell.
+
+    Rounded to the *nearest* line rather than floored, so the marked pair straddles it
+    as evenly as the grid allows. This is the boundary a detector has to test against,
+    and it is not the same as width // 2: on 1920 with a 256 grid the centre pixel 960
+    sits inside the right-hand cell, so splitting on 960 would put both candidate cells
+    on its left and read every frame as a 1. Anything reading the bit back must call
+    this rather than re-deriving a midpoint of its own.
+    """
+    return int(round(width / 2 / square_size)) * square_size
+
+
 def get_middle_patches(frame):
     H, W = frame.shape
-    return (get_patch(W//2 - SQUARE_SIZE, H//2-SQUARE_SIZE//2, frame),), (get_patch(W//2, H//2-SQUARE_SIZE//2, frame),)
+
+    # Snap to the SQUARE_SIZE grid get_grid_patches tiles from (0, 0), so the embedded
+    # block lands on exactly one grid cell instead of straddling four.
+    col = get_middle_split_col(W)
+    row = int(round(H / 2 / SQUARE_SIZE)) * SQUARE_SIZE
+
+    return (get_patch(col - SQUARE_SIZE, row, frame),), (get_patch(col, row, frame),)
 
 
 def get_nxn_block(patch, block_size):

@@ -20,14 +20,14 @@ class Impairment_View:
         if not ret:
             print("src ended")
             return None
-        return cv2.cvtColor(src_frame, cv2.COLOR_BGR2YUV)
+        return cv2.cvtColor(src_frame, cv2.COLOR_BGR2GRAY)
 
     def get_imp_frame(self):
         ret, imp_frame = self.imp.read()
         if not ret:
             print("imp ended")
             return None
-        return cv2.cvtColor(imp_frame, cv2.COLOR_BGR2YUV)
+        return cv2.cvtColor(imp_frame, cv2.COLOR_BGR2GRAY)
 
     def get_frame_diff(self):
         src_frame = self.get_source_frame()
@@ -68,8 +68,9 @@ class Impairment_View:
 
                 # imwrite truncate-casts a float image to 8-bit without scaling,
                 # so anything not already uint8 gets clipped explicitly here.
-                if diff_map.dtype != np.uint8:
+                '''if diff_map.dtype != np.uint8:
                     diff_map = np.clip(diff_map, 0, 255).astype(np.uint8)
+                    '''
 
                 # Zero-padded so the frames sort in playback order; frame_100
                 # sorts before frame_11 otherwise.

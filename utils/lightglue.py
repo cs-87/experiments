@@ -10,6 +10,17 @@ from lightglue.utils import numpy_image_to_torch, rbd
 logger = logging.getLogger(__name__)
 
 
+# Slack allowed on the frame bounds, in pixels. A near-identity homography between a
+# source and its own re-encode still carries a sub-pixel translation, which lands the
+# grid's first row and column a tenth of a pixel outside the frame. Rejecting on that
+# throws away the whole top and left edge of the grid -- and cell (0,0) is the first one
+# a grid walk asks for, so the caller sees None on its very first patch. Overhang up to
+# this much is warped with a replicated border instead: one duplicated edge column
+# cannot shift a 256x256 patch's spectrum, while a patch that is genuinely off-frame is
+# still dropped.
+EDGE_TOLERANCE = 1.0
+
+
 def warp_patch(
     wmk_y: np.ndarray, x: float, y: float, homography: np.ndarray, patch_size: int
 ) -> np.ndarray | None:
@@ -18,10 +29,10 @@ def warp_patch(
     original frame using ``homography``.
 
     Returns a ``(patch_size x patch_size)`` uint8 array, or ``None`` if the
-    projected patch falls outside the watermarked frame.
+    projected patch falls more than ``EDGE_TOLERANCE`` outside the watermarked
+    frame.
     """
     h, w = wmk_y.shape[:2]
-    half = patch_size // 2
     corners = np.array([
         [x, y],
         [x + patch_size, y],
@@ -30,8 +41,10 @@ def warp_patch(
     ], dtype=np.float32)
     proj = cv2.perspectiveTransform(corners[None], homography)[0]
     if (
-        proj[:, 0].min() < 0 or proj[:, 1].min() < 0
-        or proj[:, 0].max() >= w or proj[:, 1].max() >= h
+        proj[:, 0].min() < -EDGE_TOLERANCE
+        or proj[:, 1].min() < -EDGE_TOLERANCE
+        or proj[:, 0].max() > w - 1 + EDGE_TOLERANCE
+        or proj[:, 1].max() > h - 1 + EDGE_TOLERANCE
     ):
         return None
     dst = np.array(
@@ -42,6 +55,9 @@ def warp_patch(
         wmk_y,
         cv2.getPerspectiveTransform(proj.astype(np.float32), dst),
         (patch_size, patch_size),
+        # Defined values for the sub-pixel overhang tolerated above; the default
+        # constant border would blacken an edge column and forge a spectral cliff.
+        borderMode=cv2.BORDER_REPLICATE,
     )
     return patch if patch.shape == (patch_size, patch_size) else None
 
