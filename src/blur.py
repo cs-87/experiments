@@ -19,12 +19,14 @@ from utils.transcode_n import transcode_n_times
 INPUT = "4_sec_source.mp4"
 OUTPUT = "./out/wmk.mp4"
 
-LEAKED = "IMG_2220.mov"
+LEAKED = "IMG_2223.mov"
 
 SIFT_PATCHES = False
 
 ONES = (1 << 32) - 1
 ZEROS = 0
+
+LIGHTGLUE = False
 
 TEMP_REDUNDANCY = 120
 ALPHA = 20
@@ -38,7 +40,7 @@ ALPHA = 20
 # refills that band with more blocking noise than it removed, leaving the mark
 # undetectable (cliff margin x1.13, i.e. nothing). 200 nulls 52% of coefficients for
 # 0.55% of AC energy: still visually subtle, but the cliff survives encoding at x11.
-RADIUS = 200
+RADIUS = 10
 
 # Width of the annuli the view compares either side of RADIUS, in coefficients.
 CLIFF_BAND = 24
@@ -57,9 +59,11 @@ class BLUR_IMPAIRMENT_VIEW(Impairment_View):
             # pool matches embed()'s exactly while the other's is a harmless what-if.
             # Divergence accumulates only across runs, and the per-run flush erases it.
             self.pool_first, self.pool_second = [], []
+
+            if LIGHTGLUE:
     
-            self.matcher = LightGluePatchMatcher()
-            self.homography = np.eye(3, dtype=np.float32)
+                self.matcher = LightGluePatchMatcher()
+                self.homography = np.eye(3, dtype=np.float32)
 
     """
     Blind read-out of the embedded bit.
@@ -107,7 +111,7 @@ class BLUR_IMPAIRMENT_VIEW(Impairment_View):
             return None
 
 
-        if self.frame_index == 0:
+        if LIGHTGLUE:
             # A rejected homography is not a reason to abandon the run: for a
             # pixel-aligned re-encode identity is the correct answer anyway, and the
             # cliff scores below will show plainly if the alignment is in fact wrong.
@@ -118,23 +122,29 @@ class BLUR_IMPAIRMENT_VIEW(Impairment_View):
         
         H, W = imp_frame.shape
 
-        residual = np.zeros(imp_frame.shape, dtype=np.float32)
+        residual = np.zeros(org_frame.shape, dtype=np.float32)
         cells = []
 
         for patch, y, x in get_grid_patches(org_frame):
 
             h, w = patch.shape
 
-            imp_patch = warp_patch(
-                imp_frame,x=x[0],y=y[0],homography=self.homography,patch_size=SQUARE_SIZE
-            )
 
-            # A cell whose projection leaves the impaired frame has nothing to measure.
-            # Leave its residual black and keep it out of the scoring rather than
-            # scoring an absence -- a partly-missing patch reads as a spectral cliff and
-            # would win the vote for the wrong reason.
-            if imp_patch is None:
-                continue
+            if LIGHTGLUE:
+
+                imp_patch = warp_patch(
+                    imp_frame,x=x[0],y=y[0],homography=self.homography,patch_size=SQUARE_SIZE
+                )
+
+                # A cell whose projection leaves the impaired frame has nothing to measure.
+                # Leave its residual black and keep it out of the scoring rather than
+                # scoring an absence -- a partly-missing patch reads as a spectral cliff and
+                # would win the vote for the wrong reason.
+                if imp_patch is None:
+                    continue
+
+            else:
+                imp_patch = imp_frame[y[0]:y[1], x[0]:x[1]]
 
             # Keep ONLY high-frequency DCT coefficients
             mask = get_blur_mask(radius=RADIUS, h=h, w=w, lower=False)
@@ -301,10 +311,10 @@ def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
 
 if __name__ == "__main__":
 
-    #embed(video_path=INPUT, output_path=OUTPUT, watermark=ONES)
+    embed(video_path=INPUT, output_path=OUTPUT, watermark=ONES)
 
     # detect(watermark_path=OUTPUT, org_video_path=INPUT)
 
     #transcode_n_times(OUTPUT, "blur", 6)
 
-    get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")
+    #get_frame_imp_analysis(imp_path=INPUT, out_dir="imp_view")
