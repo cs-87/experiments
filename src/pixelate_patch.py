@@ -19,14 +19,14 @@ from utils.transcode_n import transcode_n_times
 INPUT = "4_sec_source.mp4"
 OUTPUT = "./out/wmk.mp4"
 
-LEAKED = "rencode_2.mp4"
+LEAKED = "leak.mp4"
 
 SIFT_PATCHES = False
 
 ONES = (1 << 32) - 1
 ZEROS = 0
 
-TEMP_REDUNDANCY = 5
+TEMP_REDUNDANCY = 120
 ALPHA = 20
 
 # Size of the constant-colour blocks. Shared by embed and detect so the two cannot
@@ -176,9 +176,7 @@ class PIXELATE_IMP_VIEW(Impairment_View):
         # The patch coordinates are derived from the source frame, so the impaired frame
         # has to be on the same grid before they can crop the same region out of it.
         # imp_y = cv2.resize(imp_y, (src_y.shape[1], src_y.shape[0]))
-
-        if self.frame_index == 0:
-            self.homograhy = self.matcher.compute_homography(src_y, imp_y)
+        self.homograhy = self.matcher.compute_homography(src_y, imp_y)
 
         # Mirrors embed()'s flush. The pool is what makes the mark rotate within a run,
         # so replaying the rotation means replaying the clear at each run boundary too.
@@ -298,18 +296,18 @@ def pixelation_residual(patch, pixel_size=PIXEL_SIZE):
 
 
 def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
-    impv = PIXELATE_IMP_VIEW(INPUT, imp_path, out_dir)
+    
+    impv = Impairment_View(INPUT, imp_path, out_dir)
     impv.start()
     impv.release()
 
 
 if __name__ == "__main__":
 
-    embed(video_path=INPUT, output_path=OUTPUT, watermark=ONES)
+    #embed(video_path=INPUT, output_path=OUTPUT, watermark=ONES)
 
     # detect(watermark_path=OUTPUT, org_video_path=INPUT)
 
     # transcode_n_times(OUTPUT, "pixelate", 6)
 
-    get_frame_imp_analysis(
-        imp_path=OUTPUT, out_dir="imp_view")
+    get_frame_imp_analysis(imp_path=LEAKED,out_dir="imp_view")

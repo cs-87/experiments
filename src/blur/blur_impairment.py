@@ -103,7 +103,7 @@ class BLUR_IMPAIRMENT_VIEW(Impairment_View):
         
         H, W = imp_frame.shape
 
-        residual = np.zeros(imp_frame.shape, dtype=np.float32)
+        residual = np.zeros(org_frame.shape, dtype=np.float32)
         cells = []
 
         for patch, y, x in get_grid_patches(org_frame):
@@ -119,12 +119,21 @@ class BLUR_IMPAIRMENT_VIEW(Impairment_View):
             else:
                 imp_patch, y,x = get_patch(x[0],y[0],imp_frame)
 
-            # A cell whose projection leaves the impaired frame has nothing to measure.
-            # Leave its residual black and keep it out of the scoring rather than
-            # scoring an absence -- a partly-missing patch reads as a spectral cliff and
-            # would win the vote for the wrong reason.
-            if imp_patch is None:
-                continue
+            if LIGHTGLUE:
+
+                imp_patch = warp_patch(
+                    imp_frame,x=x[0],y=y[0],homography=self.homography,patch_size=SQUARE_SIZE
+                )
+
+                # A cell whose projection leaves the impaired frame has nothing to measure.
+                # Leave its residual black and keep it out of the scoring rather than
+                # scoring an absence -- a partly-missing patch reads as a spectral cliff and
+                # would win the vote for the wrong reason.
+                if imp_patch is None:
+                    continue
+
+            else:
+                imp_patch = imp_frame[y[0]:y[1], x[0]:x[1]]
 
             # Keep ONLY high-frequency DCT coefficients
             mask = get_blur_mask(radius=RADIUS, h=h, w=w, lower=False)
