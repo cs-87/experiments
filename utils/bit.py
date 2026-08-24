@@ -8,12 +8,11 @@ def get_bit_string(output):
 def get_integer(bit_string, bit_length):
     return int(bit_string[:bit_length], 2)
 
-def hex_to_32bit(hex_value):
-    int = int(hex_value, 16) & 0xFFFFFFFF
-    return get_bit_string(int)
+def hex_to_uint32(value):
+    return int(value, 16) & 0xFFFFFFFF
 
-def int32_to_hex(x):
-    return f"{x:08X}"
+def uint32_to_hex(value):
+    return f"{value & 0xFFFFFFFF:08X}"
 
 
 def get_bcr(original,recovered, expected_length, bit_lenght = BIT_LENGTH):

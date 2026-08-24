@@ -29,3 +29,4 @@ def transcode_n_times(input_video, output_dir, n):
         current = output
 
     print(f"Final video: {current}")
+    return current
