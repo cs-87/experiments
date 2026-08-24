@@ -35,19 +35,16 @@ PATCH_FUNCTIONS = {
 }
 
 
-PATCH_DECISION_ALGO = PATCH_DECISION.BEST_BLUR
+PATCH_DECISION_ALGO = PATCH_DECISION.MIDDLE
 
 
-
-INPUT = "/home/csx87/Workspace/sample_videos/4_min_source.mp4"
+INPUT = "4_sec_source.mp4"
 OUTPUT = "./out/wmk.mp4"
 
 LEAKED = "IMG_2220.mov"
 
 ONES = (1 << 32) - 1
 ZEROS = 0
-
-
 
 
 def embed(video_path, output_path, watermark: int):
@@ -57,11 +54,11 @@ def embed(video_path, output_path, watermark: int):
     frame_count = video_io.frame_count
     count = 0
 
-
     if frame_count < length*TEMP_REDUNDANCY:
         if frame_count < TEMP_REDUNDANCY:
-            raise ValueError(f"Video should have at least {TEMP_REDUNDANCY} frames")
-        length = frame_count // TEMP_REDUNDANCY 
+            raise ValueError(
+                f"Video should have at least {TEMP_REDUNDANCY} frames")
+        length = frame_count // TEMP_REDUNDANCY
 
     # Centres already marked during the current bit run, so the mark rotates instead of
     # sitting in one place. Cleared at every run boundary: detect() replays this exact
@@ -78,13 +75,14 @@ def embed(video_path, output_path, watermark: int):
 
         if PATCH_DECISION_ALGO == PATCH_DECISION.BEST_BLUR:
 
-            first_half, second_half = PATCH_FUNCTIONS[PATCH_DECISION_ALGO](frame.y, score_patch_for_watermark)
+            first_half, second_half = PATCH_FUNCTIONS[PATCH_DECISION_ALGO](
+                frame.y, score_patch_for_watermark)
 
         else:
-            first_half, second_half = PATCH_FUNCTIONS[PATCH_DECISION_ALGO](frame.y)
+            first_half, second_half = PATCH_FUNCTIONS[PATCH_DECISION_ALGO](
+                frame.y)
 
         half = first_half if bit == 1 else second_half
-
 
         if half is not None:
             patch, y, x = half
@@ -113,31 +111,34 @@ def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
     impv.release()
 
 
-
 if __name__ == "__main__":
 
+    length = embed(video_path=INPUT, output_path=OUTPUT,
+                   watermark=hex_to_uint32("DEADBEEF"))  # 0x12345678
 
-    length = embed(video_path=INPUT, output_path=OUTPUT, watermark=ZEROS)
+    # length = BIT_LENGTH
 
-    #length = BIT_LENGTH
+    # transcode_n_times(OUTPUT, "blur", 6)
 
-    #transcode_n_times(OUTPUT, "blur", 6)
+    output = OUTPUT  # if 0 else "blur/transcoded_6.mp4"
 
-    output = OUTPUT #if 0 else "blur/transcoded_6.mp4"
-    
+    '''
 
     candidate_score = score_patch_for_watermark if PATCH_DECISION_ALGO == PATCH_DECISION.BEST_BLUR else None
-    result = detect(org_video_path=INPUT , imp_video_path=output,temp_redundancy=TEMP_REDUNDANCY, candidate_fn=PATCH_FUNCTIONS[PATCH_DECISION_ALGO],candidate_score=candidate_score, bit_length=length)
-    print(result["watermark"],uint32_to_hex(result["watermark"]) ,result["bit_string"])
+    result = detect(org_video_path=INPUT, imp_video_path=output, temp_redundancy=TEMP_REDUNDANCY,
+                    candidate_fn=PATCH_FUNCTIONS[PATCH_DECISION_ALGO], candidate_score=candidate_score, bit_length=length)
+    print(result["watermark"], uint32_to_hex(
+        result["watermark"]), result["bit_string"])
 
     margins = result["margins"]
 
     if len(margins) > 1:
 
-        margins = [x for x in margins if x!= 0]
+        margins = [x for x in margins if x != 0]
         mean = statistics.mean(margins)
         std = statistics.stdev(margins)
 
-        print(round(mean,2),round(mean - 3*std,2))  
+        print(round(mean, 2), round(mean - 3*std, 2))
+    '''
 
-    #get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")
+    get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")

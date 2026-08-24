@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 import utils.dct as dct
 from utils.bit import BIT_LENGTH, get_integer
-from src.blur.blur import RADIUS,TEMP_REDUNDANCY, get_blur_mask, score_patch_for_watermark
+from src.blur.blur import RADIUS, TEMP_REDUNDANCY, get_blur_mask, score_patch_for_watermark
 from src.blur.patch import (
     get_best_patch_in_both_half,
     get_best_sift_patches_in_two_halves,
@@ -36,6 +36,8 @@ from src.blur.patch import (
     select_candidate,
 )
 
+from utils.lightglue import LightGluePatchMatcher, warp_patch
+
 # Default gate for the optional margin check. Both scores are fractions of removed HF
 # energy, so their difference is on the same 0-1 scale: a blurred candidate against an
 # untouched one separates by most of that range, while two untouched candidates sit on
@@ -43,6 +45,8 @@ from src.blur.patch import (
 # frame always votes, which is the right default when the temporal majority below is
 # already doing the noise rejection.
 MIN_MARGIN = 0
+
+LIGHTGLUE = True  # use LightGlue to find the patch in the impaired frame and warp it back to the original shape
 
 
 def hf_energy(org_patch, imp_patch, radius=RADIUS):
@@ -74,7 +78,7 @@ def pooled_loss(org_hf, imp_hf):
     return 1.0 - (imp_hf / (org_hf + 1e-9))  # 1e-9 to avoid zero division
 
 
-def candidate_energy(candidate, imp_frame_y, radius=RADIUS):
+def candidate_energy(candidate, imp_frame_y, radius=RADIUS, homography=None):
     """
     (org_hf, imp_hf) for one candidate, or None if it cannot be measured.
 
@@ -91,7 +95,15 @@ def candidate_energy(candidate, imp_frame_y, radius=RADIUS):
     if org_patch is None:
         return None
 
-    imp_patch = imp_frame_y[y[0]:y[1], x[0]:x[1]]
+        if LIGHTGLUE and homography is not None:
+            # The impaired frame may have been cropped or resized, so the original patch
+            # coordinates may not land on the same content. Use LightGlue to find the
+            # patch in the impaired frame and warp it back to the original shape.
+            imp_patch = wrap_patch(
+                imp_frame_y, x, y, homography, org_patch.shape[0])
+
+    else:
+        imp_patch = imp_frame_y[y[0]:y[1], x[0]:x[1]]
 
     # A frame boundary can clip the slice short even though the original patch was whole.
     # Measuring mismatched shapes would compare two different spectra and read as loss.
@@ -176,7 +188,7 @@ def detect(
     imp_video_path,
     temp_redundancy,
     candidate_fn,
-    candidate_score = None,
+    candidate_score=None,
     bit_length=BIT_LENGTH,
     min_margin=MIN_MARGIN,
     radius=RADIUS,
@@ -220,7 +232,6 @@ def detect(
 
     frame_count = int(org_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-
     # Pooled HF energy per bit, one accumulator per candidate. Summing the raw energies
     # and dividing once at the end is deliberately not the same as averaging per-frame
     # ratios: it weights every frame by how much HF energy its patch actually carried,
@@ -239,6 +250,10 @@ def detect(
     pooled_frames = [0] * bit_length
     skipped = [0] * bit_length
 
+    if LIGHTGLUE:
+        matcher = LightGluePatchMatcher()
+        homography = None
+
     try:
         for i in tqdm(range(frame_count), total=frame_count, unit="frame", desc="detecting"):
             org_y = _read_y(org_cap)
@@ -249,19 +264,26 @@ def detect(
             if imp_y is None:
                 break
 
+            if LIGHTGLUE:
+                homography = matcher.compute_homography(org_y, imp_y)
+
             # A re-encode at a different resolution still carries the mark, but the
             # candidate coordinates are in the original's frame of reference.
-            if imp_y.shape != org_y.shape:
-                imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
+            else:
+                if imp_y.shape != org_y.shape:
+                    imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
 
             bit_index = (i // temp_redundancy) % bit_length
 
             if candidate_score is None:
                 one_candidate, zero_candidate = candidate_fn(org_y)
             else:
-                one_candidate, zero_candidate = candidate_fn(org_y, candidate_score)
-            one_energy = candidate_energy(one_candidate, imp_y, radius=radius)
-            zero_energy = candidate_energy(zero_candidate, imp_y, radius=radius)
+                one_candidate, zero_candidate = candidate_fn(
+                    org_y, candidate_score)
+            one_energy = candidate_energy(
+                one_candidate, imp_y, radius=radius, homography=homography)
+            zero_energy = candidate_energy(
+                zero_candidate, imp_y, radius=radius, homography=homography)
 
             # Both sides or neither: pooling one candidate's frame without the other's
             # would bias the comparison the whole method rests on.
@@ -297,7 +319,6 @@ def detect(
 
         # reported as a percentage; min_margin gates the raw 0-1 value above
         margins.append(abs(margin) * 100)
-        
 
         if abs(margin) < min_margin:
             undecided.append(index)
@@ -384,7 +405,6 @@ def detect_multiple_patch(
 
     frame_count = int(org_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-
     # Pooled HF energy per bit, one accumulator per candidate. Summing the raw energies
     # and dividing once at the end is deliberately not the same as averaging per-frame
     # ratios: it weights every frame by how much HF energy its patch actually carried,
@@ -403,6 +423,10 @@ def detect_multiple_patch(
     pooled_frames = [0] * bit_length
     skipped = [0] * bit_length
 
+    if LIGHTGLUE:
+        matcher = LightGluePatchMatcher()
+        homography = None
+
     try:
         for i in tqdm(range(frame_count), total=frame_count, unit="frame", desc="detecting"):
             org_y = _read_y(org_cap)
@@ -413,10 +437,14 @@ def detect_multiple_patch(
             if imp_y is None:
                 break
 
+            if LIGHTGLUE:
+                homography = matcher.compute_homography(org_y, imp_y)
+
             # A re-encode at a different resolution still carries the mark, but the
             # candidate coordinates are in the original's frame of reference.
-            if imp_y.shape != org_y.shape:
-                imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
+            else:
+                if imp_y.shape != org_y.shape:
+                    imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
 
             bit_index = (i // temp_redundancy) % bit_length
 
@@ -431,7 +459,8 @@ def detect_multiple_patch(
                 org_hf = imp_hf = 0.0
                 measured = 0
                 for patch_details in halves:
-                    energy = candidate_energy(patch_details, imp_y, radius=radius)
+                    energy = candidate_energy(
+                        patch_details, imp_y, radius=radius)
                     if energy is None:
                         continue
                     org_hf += energy[0]
@@ -479,7 +508,6 @@ def detect_multiple_patch(
 
         # reported as a percentage; min_margin gates the raw 0-1 value above
         margins.append(abs(margin) * 100)
-        
 
         if abs(margin) < min_margin:
             undecided.append(index)
@@ -523,6 +551,4 @@ if __name__ == "__main__":
         temp_redundancy=TEMP_REDUNDANCY,
     )
 
-    #print(result)
-
-
+    # print(result)
