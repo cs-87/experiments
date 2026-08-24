@@ -122,8 +122,6 @@ if __name__ == "__main__":
 
     output = OUTPUT  # if 0 else "blur/transcoded_6.mp4"
 
-    '''
-
     candidate_score = score_patch_for_watermark if PATCH_DECISION_ALGO == PATCH_DECISION.BEST_BLUR else None
     result = detect(org_video_path=INPUT, imp_video_path=output, temp_redundancy=TEMP_REDUNDANCY,
                     candidate_fn=PATCH_FUNCTIONS[PATCH_DECISION_ALGO], candidate_score=candidate_score, bit_length=length)
@@ -139,6 +137,5 @@ if __name__ == "__main__":
         std = statistics.stdev(margins)
 
         print(round(mean, 2), round(mean - 3*std, 2))
-    '''
 
-    get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")
+    # get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")

@@ -46,7 +46,7 @@ from utils.lightglue import LightGluePatchMatcher, warp_patch
 # already doing the noise rejection.
 MIN_MARGIN = 0
 
-LIGHTGLUE = True  # use LightGlue to find the patch in the impaired frame and warp it back to the original shape
+LIGHTGLUE = False  # use LightGlue to find the patch in the impaired frame and warp it back to the original shape
 
 
 def hf_energy(org_patch, imp_patch, radius=RADIUS):
@@ -250,9 +250,10 @@ def detect(
     pooled_frames = [0] * bit_length
     skipped = [0] * bit_length
 
+    homography = None
+
     if LIGHTGLUE:
         matcher = LightGluePatchMatcher()
-        homography = None
 
     try:
         for i in tqdm(range(frame_count), total=frame_count, unit="frame", desc="detecting"):
@@ -328,8 +329,8 @@ def detect(
             bits.append("1" if margin > 0 else "0")
 
     bit_string = "".join(bits)
-    if len(undecided) == 0:
-        watermark = get_integer(bit_string, bit_length)
+    if len(undecided) == 0 and bit_length == BIT_LENGTH:
+        watermark = get_integer(bit_string)
     else:
         watermark = 0
 
@@ -517,8 +518,8 @@ def detect_multiple_patch(
             bits.append("1" if margin > 0 else "0")
 
     bit_string = "".join(bits)
-    if len(undecided) == 0:
-        watermark = get_integer(bit_string, bit_length)
+    if len(undecided) == 0 and bit_length == BIT_LENGTH:
+        watermark = get_integer(bit_string)
     else:
         watermark = 0
 
