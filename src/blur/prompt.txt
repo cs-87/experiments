@@ -1,0 +1,64 @@
+Hi Claude,
+
+In `~/Documents/experiments/src/blur`, I have a POC for my watermarking algorithm.
+
+My intention is to embed 32 bits using as few frames as possible. Right now, I am embedding a single bit per frame (actually, the same bit across `n` frames, where `n` is my temporal redundancy).
+
+The basic idea is to select a patch (or patches) from the left half for bit 1 and run it through a high-pass filter, vice versa for bit 0 where i secelt right patch. 
+
+The frequencies to filter are determined by the `RADIUS` parameter in `blur.py`.
+
+Basically, I take the DCT of the patch and remove all `(x, y)` components from the DCT matrix for which:
+
+`sqrt(x² + y²) > RADIUS`
+
+To increase robustness, I currently use temporal redundancy, which basically means storing the same bit across `n` frames.
+
+Detection currently uses the high-frequency energy of the patch in the left half (`one_energy`) and the high-frequency energy of the patch in the right half (`zero_energy`) for each frame.
+
+I collect and sum the one/zero energies across all frames belonging to a particular bit position, for both the original and watermarked videos.
+I then subtract the watermarked energy from the original energy to get `one_loss` and `zero_loss`. 
+For that bit position, if `one_loss > zero_loss`, I determine the bit to be 1 
+(although I am actually using a ratio in the current implementation).
+
+### Problem
+
+As I increase the temporal redundancy, the robustness is actually decreasing. This seems counterintuitive because more frames are carrying the same bit.
+
+So the **first task** is to investigate the code and determine why increasing temporal redundancy is causing the detector to become less robust. 
+I want you to identify the actual reason from the implementation rather than just giving general possibilities.
+
+### More importantly: design a state-of-the-art detector
+
+I have noticed that many watermarking algorithms have relatively simple embedding mechanisms but much more sophisticated detection methods.
+
+I want you to think very deeply about this and design a **state-of-the-art detector specifically for this blur-based watermark embedding**.
+
+The detector should exploit the structure of this particular embedding and robustness should ideally increase with  temporal redundancy. 
+I want you to consider things such as robust statistics, temporal aggregation, normalization, confidence estimation, 
+adaptive weighting, spatial/frequency-domain features, and any other techniques that could make detection significantly more robust.
+You have full freedom get me the best method
+
+For now, **only consider `blur_rcv_two_patches.py` and the `MIDDLE` algorithm for patch selection**. 
+Please do not redesign the embedding algorithm or introduce other patch-selection algorithms unless you feell there is some very easy win
+
+The goal is to embed all 32 bits in as few frames as practically possible while maintaining strong detection robustness.
+
+### Environment
+
+Python:
+
+`/home/csx87/Documents/feature_based_embedding/poc/myenv/bin/python3`
+
+Video inputs can be found in:
+
+`/home/csx87/Documents/experiments/inputs/`
+
+or:
+
+`/home/csx87/Documents/sample_videos/`
+
+
+You can ask me as many question as you want. 
+After every major step/conclusion save it somewhere
+so we can restart session from there

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import numpy as np
 import statistics
 
-from src.blur.blur import score_patch_for_watermark, TEMP_REDUNDANCY
+from src.blur.blur import score_patch_for_watermark, TEMP_REDUNDANCY, RADIUS
 from src.blur.blur_impairment import BLUR_IMPAIRMENT_VIEW
 
 from utils.transcode_n import transcode_n_times
@@ -21,25 +21,18 @@ from src.blur.patch import (
     get_middle_patches,
 )
 
-
-class PATCH_DECISION(Enum):
-    MIDDLE = 0
-    SIFT = 1
-    BEST_BLUR = 2
-
-
 PATCH_FUNCTIONS = {
-    PATCH_DECISION.MIDDLE: get_middle_patches,
-    PATCH_DECISION.SIFT: get_best_sift_patches_in_two_halves,
-    PATCH_DECISION.BEST_BLUR: get_best_patch_in_both_half,
+    "MIDDLE": get_middle_patches,
+    "SIFT": get_best_sift_patches_in_two_halves,
+    "BEST_BLUR": get_best_patch_in_both_half,
 }
 
 
-PATCH_DECISION_ALGO = PATCH_DECISION.MIDDLE
+PATCH_DECISION_ALGO = "MIDDLE"
 
 
-INPUT = "4_sec_source.mp4"
-OUTPUT = "./out/wmk.mp4"
+INPUT = f"./inputs/{TEMP_REDUNDANCY}.mp4"
+OUTPUT = f"./outputs/{PATCH_DECISION_ALGO}/{TEMP_REDUNDANCY}/{RADIUS}.mp4"
 
 LEAKED = "IMG_2220.mov"
 
@@ -48,6 +41,8 @@ ZEROS = 0
 
 
 def embed(video_path, output_path, watermark: int):
+
+    print(output_path)
 
     bit_string, length = get_bit_string(watermark)
     video_io = Video_IO(video_path)
@@ -73,7 +68,7 @@ def embed(video_path, output_path, watermark: int):
 
         bit = int(bit_string[bit_index])
 
-        if PATCH_DECISION_ALGO == PATCH_DECISION.BEST_BLUR:
+        if PATCH_DECISION_ALGO == "BEST_BLUR":
 
             first_half, second_half = PATCH_FUNCTIONS[PATCH_DECISION_ALGO](
                 frame.y, score_patch_for_watermark)
@@ -114,15 +109,15 @@ def get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view"):
 if __name__ == "__main__":
 
     length = embed(video_path=INPUT, output_path=OUTPUT,
-                   watermark=hex_to_uint32("DEADBEEF"))  # 0x12345678
+                   watermark=hex_to_uint32("CAFECAFE"))  # 0x12345678
 
     # length = BIT_LENGTH
 
     # transcode_n_times(OUTPUT, "blur", 6)
-
+    '''
     output = OUTPUT  # if 0 else "blur/transcoded_6.mp4"
 
-    candidate_score = score_patch_for_watermark if PATCH_DECISION_ALGO == PATCH_DECISION.BEST_BLUR else None
+    candidate_score = score_patch_for_watermark if PATCH_DECISION_ALGO == "BEST_BLUR" else None
     result = detect(org_video_path=INPUT, imp_video_path=output, temp_redundancy=TEMP_REDUNDANCY,
                     candidate_fn=PATCH_FUNCTIONS[PATCH_DECISION_ALGO], candidate_score=candidate_score, bit_length=length)
     print(result["watermark"], uint32_to_hex(
@@ -137,5 +132,6 @@ if __name__ == "__main__":
         std = statistics.stdev(margins)
 
         print(round(mean, 2), round(mean - 3*std, 2))
+    '''
 
     # get_frame_imp_analysis(imp_path=OUTPUT, out_dir="imp_view")

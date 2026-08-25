@@ -37,6 +37,8 @@ from src.blur.patch import (
 )
 
 from utils.lightglue import LightGluePatchMatcher, warp_patch
+from statistics import multimode
+
 
 # Default gate for the optional margin check. Both scores are fractions of removed HF
 # energy, so their difference is on the same 0-1 scale: a blurred candidate against an
@@ -250,6 +252,8 @@ def detect(
     pooled_frames = [0] * bit_length
     skipped = [0] * bit_length
 
+    bits_accu = [[] for _ in range(bit_length)]
+
     homography = None
 
     if LIGHTGLUE:
@@ -297,6 +301,16 @@ def detect(
             zero_org[bit_index] += zero_energy[0]
             zero_imp[bit_index] += zero_energy[1]
             pooled_frames[bit_index] += 1
+
+            '''
+            one_loss = pooled_loss(one_org[bit_index], one_imp[bit_index])
+            zero_loss = pooled_loss(zero_org[bit_index], zero_imp[bit_index])
+            margin = one_loss - zero_loss
+
+            if abs(margin) > MIN_MARGIN:
+
+                bits_accu[bit_index].append(1 if margin > 0 else 0)
+            '''
     finally:
         org_cap.release()
         imp_cap.release()
@@ -328,7 +342,21 @@ def detect(
         else:
             bits.append("1" if margin > 0 else "0")
 
+    '''
+
+    for index, bits_ac in enumerate(bits_accu):
+
+        majority = multimode(bits_ac)
+        if len(majority) != 1:
+            undecided.append(index)
+            bits.append("?")
+
+        else:
+            bits.append(str(majority[0]))
+    '''
+
     bit_string = "".join(bits)
+
     if len(undecided) == 0 and bit_length == BIT_LENGTH:
         watermark = get_integer(bit_string)
     else:

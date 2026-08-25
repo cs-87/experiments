@@ -293,3 +293,88 @@ def get_half_patches_grid(frame):
             second_half.append((patch, y, x))
 
     return first_half, second_half
+
+
+# Cells per side carried by one bit. 1 reproduces get_middle_patches exactly, so the
+# cluster is a strict generalisation of the two-cell embedder rather than a fork of it.
+CLUSTER_K = 1
+
+
+def _pair_offsets(max_ring=8):
+    """
+    (column_step, row_step) offsets ordered outward from the split column.
+
+    column_step counts cells away from the split line, starting at 1; row_step counts
+    cells away from the centre row, signed. Ordered by ring (column_step + |row_step|)
+    so the innermost pairs come first, which is what puts the strongest, most
+    centre-adjacent cells in the cluster and leaves the outer ones as controls.
+    """
+    offsets = []
+    for ring in range(1, max_ring + 1):
+        for dc in range(1, ring + 1):
+            dr_mag = ring - dc
+            for dr in ((0,) if dr_mag == 0 else (-dr_mag, dr_mag)):
+                offsets.append((dc, dr))
+    return offsets
+
+
+def middle_pair_cells(frame, count, skip=0, square_size=SQUARE_SIZE):
+    """
+    `count` mirrored (left_cell, right_cell) grid-cell pairs straddling frame centre.
+
+    Each element is ((patch, y, x), (patch, y, x)) -- the bit-1 candidate on the left of
+    the split column and its mirror image on the right. Mirrored deliberately: the whole
+    method is a difference between the two sides, so any asymmetry in how the two sets
+    are chosen shows up as a bias that no amount of averaging removes.
+
+    A pair is emitted only when both of its cells are wholly on frame. Dropping one side
+    of a pair would reintroduce exactly that asymmetry.
+
+    `skip` discards the first `skip` pairs, which is how the detector's control cells are
+    taken from the same ordering as the marked cluster without overlapping it -- one
+    generator for both means the two can never drift apart.
+    """
+    H, W = frame.shape
+    col = get_middle_split_col(W, square_size)
+    row = int(round(H / 2 / square_size)) * square_size
+
+    shape = (square_size, square_size)
+    pairs = []
+    for dc, dr in _pair_offsets():
+        y = row + dr * square_size
+        lx = col - dc * square_size
+        rx = col + (dc - 1) * square_size
+
+        # get_patch only rejects an overhang past the far edge; a negative origin walks
+        # off the near edge instead, where a numpy slice silently returns an empty array
+        # rather than None. Checked here so an off-frame cell can never reach the DCT.
+        if y < 0 or lx < 0 or rx < 0:
+            continue
+
+        left = get_patch(lx, y, frame, square_size=square_size)
+        right = get_patch(rx, y, frame, square_size=square_size)
+
+        if left[0] is None or right[0] is None:
+            continue
+        if left[0].shape != shape or right[0].shape != shape:
+            continue
+
+        pairs.append((left, right))
+        if len(pairs) >= skip + count:
+            break
+
+    return pairs[skip:skip + count]
+
+
+def get_middle_cluster(frame, k=CLUSTER_K, square_size=SQUARE_SIZE):
+    """
+    The K cells per side that carry one bit, as (left_cells, right_cells).
+
+    k=1 returns exactly get_middle_patches' pair, wrapped in lists. Above that the extra
+    cells are the next ones outward, which is where the redundancy has to come from:
+    frames of one bit run are repeated measurements of a single scene and correlate
+    almost perfectly, while cells in different parts of the frame sit on different
+    content and their errors do not.
+    """
+    pairs = middle_pair_cells(frame, count=k, square_size=square_size)
+    return [p[0] for p in pairs], [p[1] for p in pairs]

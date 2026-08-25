@@ -1,3 +1,4 @@
+import utils.dct
 from utils.video import Video_IO
 import utils.dct as dct
 from utils.bit import get_bit_string, BIT_LENGTH, get_integer
@@ -15,9 +16,6 @@ from src.impairment_view import Impairment_View
 from utils.transcode_n import transcode_n_times
 
 
-
-
-
 INPUT = "4_sec_source.mp4"
 OUTPUT = "./out/wmk.mp4"
 
@@ -31,7 +29,6 @@ ZEROS = 0
 ALPHA = 20
 
 
-
 # Width of the annuli the view compares either side of RADIUS, in coefficients.
 CLIFF_BAND = 24
 
@@ -39,9 +36,6 @@ CLIFF_BAND = 24
 # guessed at. Natural content sits near x2-3; a surviving blur cliff is x10 upwards.
 CLIFF_MIN_MARGIN = 4.0
 
-
-import numpy as np
-import utils.dct
 
 # DCT radial cutoff of the blur. Shared by embed and the impairment view so the two
 # cannot drift apart -- the view scores the cliff at this exact radius.
@@ -52,38 +46,38 @@ import utils.dct
 # refills that band with more blocking noise than it removed, leaving the mark
 # undetectable (cliff margin x1.13, i.e. nothing). 200 nulls 52% of coefficients for
 # 0.55% of AC energy: still visually subtle, but the cliff survives encoding at x11.
+
+TEMP_REDUNDANCY = 120
+
 RADIUS = 200
-TEMP_REDUNDANCY = 3
 
-def get_blur_mask(radius,h,w,lower=True):
 
-    Y,X = np.ogrid[:h,:w]
+def get_blur_mask(radius, h, w, lower=True):
+
+    Y, X = np.ogrid[:h, :w]
     # Distance of each DCT coefficient from the DC corner. Named `dist` rather than
     # reusing `radius`, which would shadow the cutoff passed in by the caller.
-    dist = np.sqrt(X**2 + Y **2)
+    dist = np.sqrt(X**2 + Y ** 2)
 
     if lower is False:
-        mask = (dist>radius).astype(np.float32)
+        mask = (dist > radius).astype(np.float32)
 
     else:
-        mask = (dist<=radius).astype(np.float32)
+        mask = (dist <= radius).astype(np.float32)
 
     return mask
-    
 
 
 def blur_region(img, radius=RADIUS):
     h, w = img.shape[:2]
     dct_coeff = dct.dct2(img)
 
-    mask = get_blur_mask(radius,h,w)
+    mask = get_blur_mask(radius, h, w)
 
     filtered_dct = dct_coeff*mask
     filtered_patch = dct.idct2(filtered_dct)
-    
-    
-    return filtered_patch
 
+    return filtered_patch
 
 
 def score_patch_for_watermark(patch, w_delta=1.0, w_texture=0.5, w_clip=2.0):
@@ -109,9 +103,8 @@ def score_patch_for_watermark(patch, w_delta=1.0, w_texture=0.5, w_clip=2.0):
     `lambda patch: score_patch_for_watermark(patch, blur_region(patch) - patch)`.
     """
 
-
     wmk_patch = blur_region(patch)
-    delta =wmk_patch - patch
+    delta = wmk_patch - patch
     patch = patch.astype(np.float32)
     delta = delta.astype(np.float32)
     marked = patch + delta
