@@ -37,6 +37,7 @@ from src.blur.patch import (
 )
 
 from utils.lightglue import LightGluePatchMatcher, warp_patch
+from src.blur.mapping import bit_index_for_frame
 from statistics import multimode
 
 
@@ -97,12 +98,18 @@ def candidate_energy(candidate, imp_frame_y, radius=RADIUS, homography=None):
     if org_patch is None:
         return None
 
-        if LIGHTGLUE and homography is not None:
-            # The impaired frame may have been cropped or resized, so the original patch
-            # coordinates may not land on the same content. Use LightGlue to find the
-            # patch in the impaired frame and warp it back to the original shape.
-            imp_patch = wrap_patch(
-                imp_frame_y, x, y, homography, org_patch.shape[0])
+    if LIGHTGLUE and homography is not None:
+        # The impaired frame may have been cropped or resized, so the original patch
+        # coordinates may not land on the same content. Use LightGlue to find the
+        # patch in the impaired frame and warp it back to the original shape.
+        #
+        # This branch used to sit after an unconditional `return None` and to call a
+        # `wrap_patch` that does not exist, so LIGHTGLUE=True silently fell through to
+        # the plain slice below and every geometric attack was measured unaligned.
+        imp_patch = warp_patch(
+            imp_frame_y, x[0], y[0], homography, org_patch.shape[0])
+        if imp_patch is None:
+            return None
 
     else:
         imp_patch = imp_frame_y[y[0]:y[1], x[0]:x[1]]
@@ -194,6 +201,8 @@ def detect(
     bit_length=BIT_LENGTH,
     min_margin=MIN_MARGIN,
     radius=RADIUS,
+    interleave=False,
+    max_frames=None,
     verbose=True,
 ):
     """
@@ -211,6 +220,9 @@ def detect(
     per bit. Pooling before dividing is what makes this stronger than a majority vote --
     see the accumulator comment below.
 
+    `interleave` must match whatever the embedder used; it is passed straight through to
+    the shared map in src/blur/mapping.py rather than recomputed here.
+
     min_margin is optional. Left None every bit is decided, however thin the evidence.
     Set it to MIN_MARGIN (or tighter) and bits whose pooled candidates sit too close
     together are listed in the result's "undecided" -- their best guess is still in the
@@ -220,6 +232,11 @@ def detect(
     Returns a dict with the recovered integer, its bit string, and the per-bit pooled
     margins and frame counts -- the interesting part when a bit comes out wrong, since
     they separate "the two candidates tied" from "nothing was measurable here".
+
+    Kept as the baseline the matched-filter detector in blur_detect_mf.py is measured
+    against: its `1 - imp_hf/org_hf` is a ratio of *energies*, so codec noise power adds
+    into the numerator whether or not the mark is there, and on the measured clips 49%
+    of frames read negative loss on the untouched patch.
     """
     if candidate_fn is None:
         candidate_fn = RotatingCandidates(temp_redundancy=temp_redundancy)
@@ -233,6 +250,8 @@ def detect(
         raise ValueError(f"could not open impaired video: {imp_video_path}")
 
     frame_count = int(org_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if max_frames is not None:
+        frame_count = min(frame_count, max_frames)
 
     # Pooled HF energy per bit, one accumulator per candidate. Summing the raw energies
     # and dividing once at the end is deliberately not the same as averaging per-frame
@@ -278,7 +297,8 @@ def detect(
                 if imp_y.shape != org_y.shape:
                     imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
 
-            bit_index = (i // temp_redundancy) % bit_length
+            bit_index = bit_index_for_frame(
+                i, temp_redundancy, bit_length, interleave=interleave)
 
             if candidate_score is None:
                 one_candidate, zero_candidate = candidate_fn(org_y)
@@ -381,8 +401,9 @@ def bit_correct_rate(expected, recovered, bit_length=BIT_LENGTH):
     """
     Percentage of bit positions that came back correct.
 
-    Not utils.bit.get_bcr: that one writes `bcr=+1` where it means `bcr += 1`, so it
-    reports 100/bit_length whenever any bit matches at all and 0 otherwise.
+    The one correct implementation in the tree: utils.bit once carried a get_bcr that
+    wrote `bcr = +1` where it meant `bcr += 1`, reporting 100/bit_length whenever any
+    single bit matched and 0 otherwise. It has been deleted; use this.
     """
     expected_bits = format(expected, f"0{bit_length}b")
     matched = sum(1 for a, b in zip(expected_bits, recovered) if a == b)
@@ -396,6 +417,7 @@ def detect_multiple_patch(
     bit_length=BIT_LENGTH,
     min_margin=MIN_MARGIN,
     radius=RADIUS,
+    interleave=False,
     verbose=True,
 ):
     """
@@ -475,7 +497,8 @@ def detect_multiple_patch(
                 if imp_y.shape != org_y.shape:
                     imp_y = cv2.resize(imp_y, (org_y.shape[1], org_y.shape[0]))
 
-            bit_index = (i // temp_redundancy) % bit_length
+            bit_index = bit_index_for_frame(
+                i, temp_redundancy, bit_length, interleave=interleave)
 
             # Patches must be located on the ORIGINAL frame. Taking them from imp_y
             # and then measuring imp_y at the same coordinates compares the impaired

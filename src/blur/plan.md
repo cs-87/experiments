@@ -13,7 +13,7 @@ read-only (payload `0xCAFECAFE`). The findings below are measurements, not hypot
 they change what needs building.
 
 Agreed scope: survive **camcorder / screen capture**; visibility budget **RADIUS ~110-140**;
-**interleaved** frame->bit map allowed (no ECC); **cluster of cells** per side allowed.
+**interleaved** frame->bit map allowed (ECC as the last resort); **cluster of cells** per side allowed.
 
 ---
 
@@ -243,3 +243,184 @@ at all" separately from "what is the payload", which the current code cannot do.
    *different* payload; `sum_b |L_b|` must separate cleanly.
 5. Report the frames-to-32-bits curve per condition — the actual answer to "as few frames as
    possible".
+
+---
+
+## Corrections found while implementing
+
+Two things in the plan above turned out to be wrong once the code existed. Both are
+recorded here rather than silently fixed in the source, because both change what the
+design can claim.
+
+### C1 — Stage 5's phase search cannot work, and self-synchronisation is not free
+
+Plan section 2 Stage 5 claims that evaluating all 32 cyclic phases of the `i % 32` map
+and keeping the one that maximises `sum_b |L_b|` makes the payload self-synchronising.
+It does not, and the reason is a property of the scheme rather than of the
+implementation.
+
+Whenever the clip is a whole number of payload cycles -- `N = bit_length x TR`, which is
+exactly how these clips are cut -- a phase shift is a pure relabelling of the bit
+groups. The same frames land in the same groups; only the group names rotate. So every
+phase yields the same multiset of `|z_b|` and therefore the identical sum. Measured: all
+32 phases scored within 1e-9 of each other, and the argmax was decided by
+floating-point summation order, turning a 32/32 read into 16/32.
+
+From the evidence alone the payload is recoverable only **up to cyclic rotation**.
+Fixing it needs information the evidence does not contain: a sync word in the payload, a
+deliberately partial cycle, or a known frame index. The detector is non-blind and has
+already aligned the leak against the original frame by frame, so phase 0 is known rather
+than guessed -- `search_phase` is therefore **off by default**, ties resolve to the
+lowest phase, and `decode()` reports `phase_margin` so a phase that was not determined by
+the data is visible as a margin near zero.
+
+The presence statistic `sum_b |z_b|` is unaffected: it answers "is this marked at all"
+independently of the rotation, which is still something the energy detector could not do.
+
+### C2 — CUDA is available; the sparse homography schedule is not forced
+
+Plan section 2 Stage 0 assumes LightGlue must run on a sparse schedule because CUDA is
+unavailable. This box has a Tesla T4 and `torch.cuda.is_available()` is True. Measured on
+a 120-frame `moderate` cell, enabling the homography cost ~7 s of an ~80 s cell -- the
+CaptureSim attack dominates, not the matcher -- while raising the matched filter from
+19/32 to 31/32 and per-frame accuracy from 0.567 to 0.867.
+
+So alignment is not the optional refinement the plan treats it as; it is most of what
+makes the geometric conditions readable at all. The sparse schedule is kept (default
+`--homography-every 30`) because it is nearly free and the capture geometry really is
+fixed per session, but it is now a cost choice rather than a constraint.
+
+### C3 — F6 is refuted end to end: interleaving costs accuracy, and buys acquisition speed instead
+
+F6 predicted from simulation that the interleaved map would beat contiguous runs
+(32/32 against 29/32) and flagged one caveat: the simulation regrouped per-frame
+correctness measured on a *contiguously* embedded video, so it could not see the encoder
+reacting to a cell that flips sides every frame. It said this "must be validated by
+re-embedding". It has been, on one fixed source at a fixed CRF with the same 960 frames
+and therefore the same 30 frames per bit in every row, and the caveat was the real
+effect.
+
+Per-frame accuracy of the matched filter, clean / crf23:
+
+| R | TR=1 (interleaved) | TR=3 | TR=5 | TR=10 | TR=30 |
+|---|---|---|---|---|---|
+| 80  | 0.974 / 0.949 | 0.992 / 0.987 | 0.981 / 0.969 | 0.992 / 0.980 | 0.995 / 0.984 |
+| 110 | 0.936 / 0.881 | 0.974 / 0.962 | 0.965 / 0.939 | 0.978 / 0.963 | 0.993 / 0.978 |
+| 140 | **0.815 / 0.771** | 0.917 / 0.887 | 0.940 / 0.908 | 0.958 / 0.918 | 0.992 / 0.967 |
+| 200 | 0.708 / 0.679 | 0.798 / 0.763 | 0.844 / 0.797 | 0.857 / 0.841 | 0.865 / 0.829 |
+
+Interleaving is the *worst* map at every radius, and the gap widens with radius: at
+R=140 it drops the matched filter to 31/32 clean and 27/32 after one transcode, where
+every contiguous map holds 32/32. A cell that is blurred in frame i and untouched in
+frame i+1 is re-coded every frame; a static blurred block is carried cheaply by SKIP
+macroblocks. The mark is fighting the encoder rather than riding it.
+
+What interleaving does buy is **acquisition speed**, and by a wide margin. Frames needed
+to land all 32 bits, R=110: **48** interleaved against 96 (TR=3), 192 (TR=5), 672
+(TR=10), 912 (TR=30). That is structural rather than statistical -- a contiguous map at
+TR=30 cannot decide bit 31 until frame 930, whatever the evidence quality. So the real
+trade is time-to-payload against per-frame accuracy, and section 5's "as few frames as
+possible" and "BCR 32/32 with margin" pull in opposite directions.
+
+### C4 — the TR effect is real after all, for the energy detector, and F1 overcorrected
+
+F1 concluded the TR sweep was entirely confounded by the source clip swapping underneath
+it. Holding the source, the frame budget and the encode fixed, a TR effect survives, and
+it is specific:
+
+    energy baseline, every radius, both conditions:  TR=3,5,10 -> 32/32   TR=30 -> 29/32
+
+Eight cells out of eight. The matched filter is unmoved (32/32 at TR=30 for R<=140), so
+this is a property of the energy statistic under maximal clumping, exactly the mechanism
+F4 describes -- at TR=30 each bit is one 30-frame run on one scene, and a bit whose run
+lands on dead content has no independent evidence anywhere to rescue it. F1's "no
+monotone TR effect" was right that the old sweep could not measure it and wrong that
+there was nothing to measure.
+
+The per-bit margin says the same thing more sharply. Smallest |z| over the 32 bits at
+R=110 clean: 104.9 (TR=3), 116.7 (TR=5), 67.8 (TR=10), 49.2 (TR=1), **1.3 (TR=30)**.
+TR=30 reads 32/32 with essentially no margin -- a pass that would not survive a nudge.
+
+### C5 — the flicker metric measured nothing; fixed, and the section 5.3 concern is unfounded
+
+Section 5.3 asks for "a temporal-flicker metric (std over time of the marked cell) to
+catch interleaving flicker". Implemented literally, as the standard deviation over time
+of the cell's mean luma difference from the original, it cannot detect this watermark at
+all: `blur_region` nulls the DCT coefficients *beyond* the cutoff and DC is not one of
+them, so a blurred cell carries exactly the original's mean luma. The statistic read
+0.197-0.241 everywhere, marked or not, interleaved or contiguous -- that was codec noise,
+and every flicker number taken from it is meaningless.
+
+Replaced with `flicker_rms_std`: the standard deviation over time of the per-cell *RMS*
+difference, which does rise when a cell is blurred and fall when it is not, reported
+alongside `mark_rms` (the mark's mean strength) and their ratio.
+
+Measured, and it is the opposite of what section 5.3 feared:
+
+| R | | TR=1 (interleaved) | TR=3 | TR=30 |
+|---|---|---|---|---|
+| 80  | mark RMS / flicker / ratio | 6.77 / **4.40** / 0.650 | 6.70 / 4.53 / 0.677 | 6.49 / **4.93** / 0.760 |
+| 110 | | 5.57 / **3.07** / 0.550 | 5.53 / 3.28 / 0.594 | 5.38 / **3.61** / 0.671 |
+| 140 | | 4.60 / **2.01** / 0.437 | 4.57 / 2.23 / 0.487 | 4.46 / **2.46** / 0.552 |
+
+Interleaving has the *lowest* flicker amplitude at every radius and contiguous TR=30 the
+highest, consistently. There is no interleaving-flicker artefact to weigh against its
+acquisition-speed advantage.
+
+It also identifies the mechanism behind C3, and corrects the guess made there. C3
+attributed interleaving's accuracy loss to the block being "re-coded every frame", but at
+a fixed CRF more coding effort should preserve the mark better, not worse -- and the
+encoder does spend more: extra bits over contiguous TR=30 are +4.61% interleaved against
++1.04% at TR=3 (R=80), +2.71% against +0.97% (R=110), and ~+0.2% at R=200 where the mark
+barely exists.
+
+The resolution is that mean mark strength is essentially flat across maps (6.77 / 6.70 /
+6.49 at R=80) while the *swing* falls by 11%. Interleaving is not producing a weaker
+mark; it is producing a less-contrasted one. That is motion-compensated prediction
+carrying each frame's blur into the next -- reinforcing when neighbouring frames are
+marked alike, destructive when interleaving makes them opposite. The same smearing that
+flattens the swing flattens the left-versus-right difference the detector reads, which is
+why per-frame accuracy drops while PSNR does not.
+
+---
+
+## Where this lands
+
+Full grid measured: 4 radii x 5 TR x 7 conditions on one fixed source at CRF 23, plus
+visibility and false positives. 164 rows in `FINDINGS.md` / `findings.jsonl`.
+
+**Operating point.** RADIUS **80**, TR **3-10** contiguous, matched filter on the `a`
+statistic with alignment enabled. That reads 32/32 on clean, transcode, moire, mild and
+moderate capture, and holds 32/32 under a sigma=2.2 blur where every larger radius
+collapses to chance. It costs 1.1 dB of patch PSNR against R=110 (33.7 vs 34.8) and
+0.5 dB of frame PSNR -- far less than F7's 29.7-vs-31.5 estimate, which was measured
+through the old uncontrolled `mp4v` encode.
+
+If a sigma=2.2 capture is out of scope, R=110 is the better-looking choice (SSIM 0.933
+against 0.886) and is otherwise identical on every condition. That is the one judgement
+the data cannot make for you; sample frames are in `outputs/harness/dump/`.
+
+Avoid both ends of the TR range: TR=1 loses per-frame accuracy to prediction smearing
+(C3, C5) and TR=30 loses robustness and margin to run-clumping (C4). The middle is
+32/32 wherever the radius is viable and lands the payload in 96-192 frames.
+
+**Detector.** The matched filter is not a uniform win -- over 111 attacked cells it beat
+the energy baseline in 31, lost in 27 and tied in 53. It wins where it matters: full
+payload recovery at R=80 goes 18/28 to 25/28, and it holds 32/32 at TR=30 where energy
+reads 29/32 in all eight clean cells. `a` beats `z` and `nc` consistently under attack.
+Presence separates marked from unmarked by ~20x (71-201 against 0.8-3.8) and reads a
+foreign payload correctly rather than reporting the one it sought.
+
+**What is not done.**
+
+1. **The cluster is implemented but never measured.** Every row above is `cluster_k=1`.
+   Stage 2's spatial pooling -- K cells per side, inverse-variance weighted -- is the
+   one form of redundancy F4 argues is genuinely independent, and the sweep did not
+   exercise it. It is also the most promising remaining lever, because it adds evidence
+   without touching RADIUS.
+2. **`severe` fails at every radius and every TR** (13-20/32, i.e. chance). Since
+   `blur_only` carries the identical blur (sigma=2.2, 7 px motion) and R=80 passes it
+   32/32, the blur is not the cause -- the geometry is (4 deg rotation, 0.075
+   perspective, 3 px shake, 0.82 zoom). That points at Stage 0 alignment rather than at
+   the mark, and is the thing to attack next.
+3. ECC, still the last resort and still untouched.

@@ -1,17 +1,79 @@
-import pathlib
-import shutil
 import subprocess
+from enum import Enum
+from pathlib import Path
 
 import cv2
-from enum import Enum
+import numpy as np
+
+# Rate control for every video this module writes. CRF is a quality target, not a
+# bitrate, so the same number means the same amount of coding damage across clips of
+# different content -- which is the property a robustness sweep needs and the one thing
+# OpenCV's writer cannot give.
+DEFAULT_CRF = 23
+DEFAULT_PRESET = "medium"
 
 
-# Rate control for the H.264 writer. Fixed CRF, not a fixed bitrate: a sweep that varies
-# RADIUS or temporal redundancy changes how compressible the marked frames are, and a
-# bitrate cap would then quietly hand a different quality to every cell of the sweep --
-# the encode becomes a confound instead of a constant. 23 is x264's own default.
-H264_CRF = 23
-H264_PRESET = "medium"
+class FFmpegWriter:
+    """
+    H.264 writer at a fixed CRF, driven by raw BGR frames over a pipe.
+
+    cv2.VideoWriter with 'mp4v' is MPEG-4 Part 2 at whatever bitrate OpenCV happens to
+    pick -- measured between 3 and 20 Mbps on the 1080p clips here, varying with content
+    and with the mark itself. A watermark that survives at 20 Mbps and dies at 3 reads as
+    a property of the watermark when it is a property of the encoder, so every sweep run
+    has to be encoded at one fixed quality or the comparison means nothing.
+
+    Written through a pipe rather than by transcoding a temporary file afterwards: a
+    second generation of encoding would be an extra, uncontrolled attack sitting between
+    the embedder and everything downstream of it.
+    """
+
+    def __init__(self, path, width, height, fps, crf=DEFAULT_CRF,
+                 preset=DEFAULT_PRESET, pix_fmt="yuv420p"):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = str(path)
+        self.width, self.height = int(width), int(height)
+        # A container needs a real frame rate; cv2 reports 0 for some sources.
+        self.fps = float(fps) if fps and fps > 0 else 30.0
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{self.width}x{self.height}", "-r", f"{self.fps}",
+            "-i", "-",
+            "-an",
+            "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
+            "-pix_fmt", pix_fmt,
+            self.path,
+        ]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+    def write(self, bgr_frame):
+        if bgr_frame.shape[:2] != (self.height, self.width):
+            raise ValueError(
+                f"frame is {bgr_frame.shape[:2]}, writer was opened for "
+                f"{(self.height, self.width)}"
+            )
+        self.proc.stdin.write(np.ascontiguousarray(bgr_frame, dtype=np.uint8).tobytes())
+
+    def release(self):
+        if self.proc is None:
+            return
+        # Closing stdin is what tells ffmpeg the stream ended; without the wait() the
+        # file's moov atom may not be written by the time a caller reads it back.
+        self.proc.stdin.close()
+        code = self.proc.wait()
+        self.proc = None
+        if code != 0:
+            raise RuntimeError(f"ffmpeg exited {code} while writing {self.path}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
 
 class FrameType(Enum):
     YUV = 1
@@ -88,8 +150,17 @@ class FFmpegWriter():
 
 
 class Video_IO():
-    def __init__(self, video_path, yuv=True, codec="h264", crf=H264_CRF):
+    def __init__(self, video_path, yuv=True, codec="h264", crf=DEFAULT_CRF,
+                 preset=DEFAULT_PRESET):
+        """
+        codec: "h264" writes through FFmpegWriter at a fixed `crf` -- the default,
+        because a sweep needs its encode held constant. "mp4v" restores the old
+        cv2.VideoWriter path for anything that has to reproduce an earlier output.
+        """
         self.video_path = video_path
+        self.codec = codec
+        self.crf = crf
+        self.preset = preset
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
             raise ValueError(f"Error opening video file: {video_path}")
@@ -135,16 +206,15 @@ class Video_IO():
             self.out = None
 
     def write_frame(self, frame, output_path):
-        # Keyed on the writer being absent rather than on frame_number == 0, so a caller
-        # that starts writing partway through a video still gets a file.
-        if self.out is None:
-            if self.codec == "h264":
-                self.out = FFmpegWriter(
-                    output_path, self.fps, self.width, self.height, crf=self.crf)
-            else:
+        if frame.frame_number == 0:
+            if self.codec == "mp4v":
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.out = cv2.VideoWriter(
                     output_path, fourcc, self.fps, (self.width, self.height))
+            else:
+                self.out = FFmpegWriter(
+                    output_path, self.width, self.height, self.fps,
+                    crf=self.crf, preset=self.preset)
 
         if self.frame_type == FrameType.YUV:
             frame_to_write = cv2.cvtColor(frame.frame, cv2.COLOR_YUV2BGR)

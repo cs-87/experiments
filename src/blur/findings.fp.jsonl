@@ -1,0 +1,12 @@
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "marked", "radius": 110, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 135.99, "recovered": "0xCAFECAFE", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "other-payload", "radius": 110, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 147.95, "recovered": "0x0F3C5A69", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "unmarked", "radius": 110, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 0.85, "recovered": "0x00000004", "phase": 0}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "marked", "radius": 110, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 199.46, "recovered": "0xCAFECAFE", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "other-payload", "radius": 110, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 200.88, "recovered": "0x0F3C5A69", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "unmarked", "radius": 110, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 3.69, "recovered": "0x03E087FC", "phase": 0}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "marked", "radius": 140, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 71.53, "recovered": "0xCAFECBFE", "phase": 0, "bcr": 31}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "other-payload", "radius": 140, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 78.88, "recovered": "0x0F3C5A69", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "unmarked", "radius": 140, "tr": 1, "cluster_k": 1, "stat": "a", "presence": 0.82, "recovered": "0x00000004", "phase": 0}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "marked", "radius": 140, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 116.21, "recovered": "0xCAFECAFE", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "other-payload", "radius": 140, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 117.72, "recovered": "0x0F3C5A69", "phase": 0, "bcr": 32}
+{"kind": "fp", "stamp": "2026-08-25 21:23 UTC", "case": "unmarked", "radius": 140, "tr": 30, "cluster_k": 1, "stat": "a", "presence": 3.82, "recovered": "0x03E0CFFD", "phase": 0}
