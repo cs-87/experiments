@@ -5,17 +5,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import shutil
-import pathlib
 
 # Rate control for every video this module writes. CRF is a quality target, not a
 # bitrate, so the same number means the same amount of coding damage across clips of
 # different content -- which is the property a robustness sweep needs and the one thing
 # OpenCV's writer cannot give.
 DEFAULT_CRF = 23
-H264_CRF = DEFAULT_CRF
 DEFAULT_PRESET = "medium"
-
-H264_PRESET=DEFAULT_PRESET
 
 
 class FFmpegWriter:
@@ -35,6 +31,8 @@ class FFmpegWriter:
 
     def __init__(self, path, width, height, fps, crf=DEFAULT_CRF,
                  preset=DEFAULT_PRESET, pix_fmt="yuv420p"):
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("ffmpeg not found on PATH; needed by FFmpegWriter")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
         self.width, self.height = int(width), int(height)
@@ -102,58 +100,6 @@ class Frame():
         self.y = self.frame[:, :, 0]   # optional, keeps the view explicit
 
 
-class FFmpegWriter():
-    """
-    H.264 writer piping raw BGR frames to ffmpeg at a fixed CRF.
-
-    OpenCV's VideoWriter with 'mp4v' encodes MPEG-4 Part 2 at whatever internal default
-    the build carries, which on 1080p lands anywhere between 3 and 20 Mbps depending on
-    content. That is a fine way to store a video and a bad way to run an experiment: the
-    codec is then an uncontrolled variable, and MPEG-4 Part 2 is not what any real
-    distribution path uses anyway. This writes the same H.264 at the same CRF every time,
-    so two runs of a sweep differ only by what the sweep changed.
-    """
-
-    def __init__(self, path, fps, width, height, crf=H264_CRF, preset=H264_PRESET):
-        if shutil.which("ffmpeg") is None:
-            raise RuntimeError("ffmpeg not found on PATH; needed by FFmpegWriter")
-
-        parent = pathlib.Path(path).parent
-        if str(parent):
-            parent.mkdir(parents=True, exist_ok=True)
-
-        self.path = str(path)
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "bgr24",
-            "-s", f"{int(width)}x{int(height)}",
-            # ffmpeg rejects a fractional fps of 0 or nan, which is what a container with
-            # no frame-rate metadata hands back through CAP_PROP_FPS.
-            "-r", f"{float(fps) if fps and fps > 0 else 30.0:.6f}",
-            "-i", "-",
-            "-an",
-            "-c:v", "libx264", "-preset", preset, "-crf", str(int(crf)),
-            # 4:2:0 rather than ffmpeg's default 4:4:4 for rawvideo input: the mark lives
-            # in luma, but a 4:4:4 file is not what a real pipeline would ever carry, and
-            # chroma subsampling is part of the distortion the mark has to survive.
-            "-pix_fmt", "yuv420p",
-            self.path,
-        ]
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-
-    def write(self, frame_bgr):
-        self.proc.stdin.write(frame_bgr.tobytes())
-
-    def release(self):
-        if self.proc is None:
-            return
-        self.proc.stdin.close()
-        code = self.proc.wait()
-        self.proc = None
-        if code != 0:
-            raise RuntimeError(f"ffmpeg exited {code} while writing {self.path}")
-
-
 class Video_IO():
     def __init__(self, video_path, yuv=True, codec="h264", crf=DEFAULT_CRF,
                  preset=DEFAULT_PRESET):
@@ -192,10 +138,13 @@ class Video_IO():
 
         ret, frame = self.cap.read()
 
-        if self.frame_type == FrameType.YUV:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV)
+        # The guard has to come first: at end of stream cap.read() hands back
+        # (False, None), and cvtColor on None raises cv2.error instead of letting
+        # the caller see the None it is checking for.
         if not ret:
             return None
+        if self.frame_type == FrameType.YUV:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV)
         self.frame_number += 1
         return Frame(frame, frame_type=self.frame_type, frame_number=self.frame_number)
 
@@ -211,7 +160,10 @@ class Video_IO():
             self.out = None
 
     def write_frame(self, frame, output_path):
-        if frame.frame_number == 0:
+        # Opened on the first frame written, not on frame_number == 0: a caller that
+        # strides, starts mid-clip, or feeds frames it built itself never presents a
+        # frame 0, and the old test left self.out as None for the whole run.
+        if self.out is None:
             if self.codec == "mp4v":
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.out = cv2.VideoWriter(
