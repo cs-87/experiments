@@ -32,9 +32,8 @@ def get_grid_patches(frame):
             yield get_patch(x, y, frame)
 
 
-def get_sift_patches(frame):
+def get_sift_patches(frame, square_size=SQUARE_SIZE):
 
-    print("Calling SIFT to get keypoints for the frame...")
     sift = SIFT()
     kps, _ = sift.get_keypoints(frame)
 
@@ -49,7 +48,7 @@ def get_sift_patches(frame):
     kps = non_overlapping_points(kps)
 
     for kp in kps:
-        yield get_patch(kp[0], kp[1], frame, centre_point=True)
+        yield get_patch(kp[0], kp[1], frame, centre_point=True, square_size=square_size)
 
 
 # kps = [(x,y),(x1,y1).....]
