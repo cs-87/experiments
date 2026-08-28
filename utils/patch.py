@@ -32,7 +32,19 @@ def get_grid_patches(frame):
             yield get_patch(x, y, frame)
 
 
-def get_sift_patches(frame, square_size=SQUARE_SIZE):
+def get_sift_patches(frame, square_size=SQUARE_SIZE, min_separation=None):
+    """
+    Centred `square_size` patches at the strongest SIFT keypoints, mutually separated.
+
+    min_separation is the Chebyshev distance enforced between the centres kept. It
+    defaults to the module SQUARE_SIZE rather than to `square_size`, which is what the
+    original code did -- so a caller asking for 128 px patches got them spaced 256
+    apart and roughly a quarter of the patches the frame could hold. That is left as
+    the default because two callers already depend on the spacing it produces; pass
+    min_separation=square_size to get the densest packing that still cannot overlap.
+    """
+    if min_separation is None:
+        min_separation = SQUARE_SIZE
 
     sift = SIFT()
     kps, _ = sift.get_keypoints(frame)
@@ -45,20 +57,20 @@ def get_sift_patches(frame, square_size=SQUARE_SIZE):
 
     kps = [(int(kp.pt[0]), int(kp.pt[1])) for kp in kps]
 
-    kps = non_overlapping_points(kps)
+    kps = non_overlapping_points(kps, min_separation=min_separation)
 
     for kp in kps:
         yield get_patch(kp[0], kp[1], frame, centre_point=True, square_size=square_size)
 
 
 # kps = [(x,y),(x1,y1).....]
-def non_overlapping_points(kps):
+def non_overlapping_points(kps, min_separation=SQUARE_SIZE):
     ret_kps = []
 
     def overlaps(x1, y1, x2, y2):
         return (
-            abs(x1 - x2) < SQUARE_SIZE and
-            abs(y1 - y2) < SQUARE_SIZE
+            abs(x1 - x2) < min_separation and
+            abs(y1 - y2) < min_separation
         )
 
     for x, y in kps:
