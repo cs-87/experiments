@@ -48,7 +48,7 @@ def embed(video_path, output_path, watermark: int, seed=8787):
 
     pool = []
 
-    prn_gen = BalancedPRNGenerator(dwt_coeffs.LL.shape, seed)
+    prn_gen = BalancedPRNGenerator((64,64), seed)
 
     prn = prn_gen.get_blalanced_prn_for_bit_string(bit_string)
 

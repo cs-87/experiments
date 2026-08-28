@@ -4,13 +4,18 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import shutil
+import pathlib
 
 # Rate control for every video this module writes. CRF is a quality target, not a
 # bitrate, so the same number means the same amount of coding damage across clips of
 # different content -- which is the property a robustness sweep needs and the one thing
 # OpenCV's writer cannot give.
 DEFAULT_CRF = 23
+H264_CRF = DEFAULT_CRF
 DEFAULT_PRESET = "medium"
+
+H264_PRESET=DEFAULT_PRESET
 
 
 class FFmpegWriter:
