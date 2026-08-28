@@ -38,7 +38,7 @@ OUT_DIR = Path("outputs/spread_spectrum")
 FINDINGS = Path("src/spread_spectrum/findings.jsonl")
 TABLE = Path("src/spread_spectrum/FINDINGS.md")
 
-COLUMNS = [("attack", 22), ("case", 9), ("frames", 7), ("sites", 6), ("bcr", 5),
+COLUMNS = [("attack", 22), ("case", 9), ("scale", 7), ("sites", 6), ("bcr", 5),
            ("exact", 6), ("id_ok", 6), ("accept", 7), ("s1", 8), ("s2", 9),
            ("minz", 6), ("f2id", 5), ("sec", 6)]
 
@@ -97,9 +97,15 @@ def measure(detector, video, attack, expected, frames, stride, workdir):
     except ValueError:                       # no evidence at all in any frame
         return {"frames_seen": 0, "sites": 0, "bcr": 0, "exact": False,
                 "id_ok": False, "accept": False, "s1": 0.0, "s2": 0.0,
-                "minz": 0.0, "f2id": None, "sec": round(time.time() - t0, 1)}
+                "minz": 0.0, "f2id": None, "scale": None, "rotation": None,
+                "geo_z": None, "sec": round(time.time() - t0, 1)}
 
+    from src.spread_spectrum.detect.localise import GeometrySearch
+    gz, gbest, gid = GeometrySearch.lock_quality(detector.geometry_table or [])
     row = {
+        "scale": round(detector.geometry[0], 4) if detector.geometry else 1.0,
+        "rotation": round(detector.geometry[1], 3) if detector.geometry else 0.0,
+        "geo_z": round(gz, 1),
         "frames_seen": len(per_frame),
         "sites": result.n_obs,
         "m_eff": round(result.m_eff, 1),
@@ -199,7 +205,10 @@ def cmd_sweep(args):
                 video = {"marked": marked, "unmarked": source, "other": decoy}[case]
                 expect = {"marked": payload, "unmarked": None, "other": other}[case]
                 # Geometry is a per-video constant, so it is re-locked per cell.
+                # The table has to be cleared too, or a cell that never runs the
+                # search reports the previous cell's hypotheses as its own.
                 detector.geometry = None
+                detector.geometry_table = None
                 row = {"source": source, "attack": name, "case": case,
                        "tag": args.tag, "frames": args.frames,
                        "payload": uint32_to_hex(payload),

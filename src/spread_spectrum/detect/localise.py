@@ -210,12 +210,15 @@ class GeometrySearch:
                       1.0, 1.1, 1.25, 4 / 3, 1.5, 2.0)
 
     def __init__(self, evidence_fn, scales=None, rotations=(0.0,), window=1280,
-                 refine=True):
+                 refine=True, min_z=15.0, anchor_ratio=1.5, min_score=2.0):
         self.evidence_fn = evidence_fn
         self.scales = tuple(scales if scales is not None else self.DEFAULT_SCALES)
         self.rotations = tuple(rotations)
         self.window = int(window)
         self.refine = bool(refine)
+        self.min_z = float(min_z)
+        self.anchor_ratio = float(anchor_ratio)
+        self.min_score = float(min_score)
 
     def _window(self, luma):
         """
@@ -243,27 +246,77 @@ class GeometrySearch:
 
     def estimate(self, frames, verbose=False):
         """
-        frames: one or two luma planes. Returns (scale, rotation, table) with every
-        hypothesis scored, so a flat surface reads as flat rather than as a confident
-        answer -- which is what an unmarked clip produces and what the caller needs to
-        be able to see.
+        Returns (scale, rotation, table), with every hypothesis scored so a flat
+        surface reads as flat rather than as a confident answer.
+
+        ANCHORED to (1.0, 0.0). The search maximises the same evidence the decision is
+        later made on, so left unanchored it is a second layer of selection bias
+        stacked on the one the evidence extractor already corrects for: on an unmarked
+        clip it locks whichever of ~21 hypotheses happens to look best, and the
+        resampling that follows then inflates the null. Measured, an unmarked clip went
+        from S2 = 34 with the geometry search off to S2 = 74 with it on.
+
+        So a non-identity geometry has to earn it three ways: stand out from the rest
+        of the grid (min_z robust standard deviations above the median hypothesis),
+        beat the identity hypothesis by anchor_ratio, and clear min_score of absolute
+        per-frame evidence. The thresholds are set from the gap that was measured, not
+        guessed: genuine locks came in at z = 53 (a 540p leak) and z = 124 (an
+        unattacked marked clip), while spurious ones on unmarked clips sat at z = 5.0
+        to 7.4. An earlier min_z of 5 let one of those through and it produced an
+        outright false positive -- an unmarked clip locked to scale 1.1, and the
+        resampling that followed pushed it to S1 = 7.43 and S2 = 91.4, over both
+        acceptance thresholds. Anchored to 1.0 the same clip reads S1 = 4.3, S2 = 34.3.
+
+        The asymmetry is deliberate. An unnecessary resample costs evidence, a missed
+        one costs all of it -- but a spurious one costs evidence AND manufactures a
+        false positive out of nothing, so the default has to be "no geometric change".
         """
         table = [(s, r, self._score(frames, s, r))
                  for s in self.scales for r in self.rotations]
         table.sort(key=lambda t: -t[2])
 
         if self.refine and table[0][2] > 0:
-            # One local pass around the winner. The grid is coarse near 1.0 and a few
-            # percent of scale error costs real evidence.
+            # One local pass around the winner: the grid is coarse and a few percent of
+            # scale error costs real evidence.
             s0, r0, _ = table[0]
-            extra = [(s0 * f, r0) for f in (0.94, 0.97, 1.03, 1.06)]
-            table += [(s, r, self._score(frames, s, r)) for s, r in extra]
+            table += [(s0 * f, r0, self._score(frames, s0 * f, r0))
+                      for f in (0.94, 0.97, 1.03, 1.06)]
             table.sort(key=lambda t: -t[2])
 
+        best_s, best_r, best = table[0]
+        identity = next((v for s, r, v in table
+                         if abs(s - 1.0) < 1e-9 and abs(r) < 1e-9), 0.0)
+        others = np.array([v for s, r, v in table[1:]], float)
+        mad = 1.4826 * np.median(np.abs(others - np.median(others))) if others.size else 0.0
+        z = (best - np.median(others)) / max(mad, 1e-9) if others.size else 0.0
+
+        n = max(len(frames), 1)
+        locked = (abs(best_s - 1.0) < 1e-9 and abs(best_r) < 1e-9) or (
+            z >= self.min_z
+            and best >= self.anchor_ratio * max(identity, 1e-9)
+            and best / n >= self.min_score)
         if verbose:
             for s, r, sc in table[:6]:
                 print(f"    scale {s:6.4f} rot {r:+5.2f}: {sc:9.2f}")
-        return table[0][0], table[0][1], table
+            print(f"    best z = {z:.1f} vs min {self.min_z}; identity = {identity:.2f}"
+                  f" -> {'lock ' + format(best_s, '.4f') if locked else 'anchor to 1.0'}")
+        if not locked:
+            return 1.0, 0.0, table
+        return best_s, best_r, table
+
+    @staticmethod
+    def lock_quality(table):
+        """(z of the winner over the rest of the grid, winner score, identity score)."""
+        if not table:
+            return 0.0, 0.0, 0.0
+        best = table[0][2]
+        identity = next((v for s, r, v in table
+                         if abs(s - 1.0) < 1e-9 and abs(r) < 1e-9), 0.0)
+        others = np.array([v for _, _, v in table[1:]], float)
+        if others.size == 0:
+            return 0.0, best, identity
+        mad = 1.4826 * np.median(np.abs(others - np.median(others)))
+        return float((best - np.median(others)) / max(mad, 1e-9)), float(best), float(identity)
 
     @staticmethod
     def warp(luma, scale, rotation=0.0):

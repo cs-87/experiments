@@ -45,6 +45,18 @@ suspect video → per-frame luma
 It is **blind** — no original video — and it needs **no temporal
 synchronisation of any kind**, because the payload has no temporal code.
 
+Built and measured. Payload `0x0F1205C6` embedded in `inputs/30.mp4` and re-encoded
+at H.264 CRF 23, detected blind against a 200 000-ID codebook:
+
+| | `S₁` | `S₂` | payload |
+|---|---|---|---|
+| **1 frame** | 18.9 | 380 | **32/32 exact** |
+| 40 frames | 79.6 | 6 560 | 32/32 exact, weakest bit at 10.3σ |
+| unwatermarked control | 4.4 | 34.4 | NO_WATERMARK |
+
+against an acceptance threshold of `S₁` > 6.81. One frame is enough. With the scale
+search on, a 1080p → 360p downscale still decodes exactly.
+
 Three levers dominate, in order of size:
 
 | lever | measured gain | cost |
@@ -372,11 +384,40 @@ scores almost identically. With a `d_min` = 6 codebook the runner-up is six bits
 away and the margin becomes informative; §11 quantifies this. It is a useful
 *secondary* diagnostic, never the acceptance test.
 
-**Calibration.** Run the full detector over unwatermarked clips spanning the
-content range, collect the empirical joint distribution of `(S₁, S₂)`, and set
-the threshold for a stated per-video FPR. A parametric threshold from the
-Gaussian null is a starting point, not the deliverable — real host noise has
-heavier tails than Gaussian.
+**The selection bias, and why it is the main correction.** Sites are chosen by
+maximising `T`, and then `T` is used as the evidence that a mark is there. That is
+selection on the statistic being tested, and it is not small. Measured on
+unwatermarked 1080p, the median `T/σ²` at the chosen sites is **73** against an
+unselected χ²₃₂ mean of **32** — which hands a clean clip a Wiener weight of 0.56
+out of nothing at all. Verified that it is the *selection* and not the weighting or
+the robustness pass: random sites give `S₂` = 31–41 under every weighting scheme,
+selected sites give 81–83 under every one.
+
+The correction is to compare each site against the **order statistic for its own
+rank** rather than against the mean. The `r`-th largest of `M` draws from χ²_K sits
+near its upper `r/M` quantile — predicted 77.0 at rank 24 of 1.7 M positions against
+the 73.0 measured. It fixes both ends at once:
+
+| | clean `S₂` | marked `S₂` | clean `S₁` | marked `S₁` |
+|---|---|---|---|---|
+| uncorrected | 81.8 | 1 147 | 6.02 | 33.5 |
+| **rank-aware** | **34.3** | **4 481** | **4.27** | **66.9** |
+
+Clean `S₂` lands on the χ²₃₂ null it should have been on all along, and the marked
+statistic *rises* fourfold, because real sites now outweigh spurious ones instead of
+merely outnumbering them.
+
+**Calibration.** Even corrected, the parametric threshold is a starting point rather
+than the deliverable. Measured clean-clip `S₁` reaches 6.65 against a parametric
+6.81 at nominal FPR 1e-6 — too close to ship on. `eval/calibrate.py` draws the null
+from **decoy PRN seeds** rather than from more clips: a decoy key has the same
+construction and the same exact orthogonality but no relation to what is embedded,
+so every seed is an independent null draw on real content, through the real attack,
+with the real selection and aggregation. That matters here because
+`inputs/{15,30,60,120}.mp4` are byte-identical content at different lengths —
+verified — so the machine holds only two distinct sources. Running decoy keys
+against a *genuinely marked* clip is also the strongest false-positive case
+available: a hit there means the detector is reading content, not the mark.
 
 ---
 
@@ -522,10 +563,30 @@ milliseconds on the T4 present on this machine, 1–2 s/frame on CPU. Restrictin
 to the top peaks after a cheap 8-PRN pass cuts it 4×.
 
 **Global geometry.** Scale and rotation are **per-video constants** for digital
-attacks — a resize or a rotate is applied once to the whole clip. Estimate them
-once by maximising `Σ T` over a coarse (scale × rotation) grid on ~5 frames using
-8 PRNs, then lock. Translation and crop need no search at all: the correlator is
-already a full-frame search.
+attacks — a resize or a rotate is applied once to the whole clip — so the search
+runs on one or two frames and the answer is then locked. Translation and crop need
+no search at all: the correlator is already a full-frame search.
+
+The objective has to be chosen carefully, and two reasonable-looking ones fail:
+
+| objective | why it fails | measured |
+|---|---|---|
+| peakiness of `T`, frame warped per hypothesis | undoing a small scale means upsampling; upsampling smooths the plane; the whitened residual of a smooth plane is heavy-tailed, so peakiness rises with upsampling whether or not a mark is present | picked the smallest scale on the grid every time; scored an unmarked clip 265 against a marked one 249 |
+| directional coherence of the top peaks, template warped instead | better founded — one payload does put the same 32-vector at every patch — but natural image structure is coherent too | unmarked 0.25–0.34 vs marked 0.21–0.38: no separation |
+| **the detector's own evidence, `Σ` per-site `z²`** | codeword-independent, and it is the quantity the decoder consumes anyway | **works** |
+
+Measured with the working objective, marked clip — every scale recovered exactly:
+
+| attack | true scale | found | verdict |
+|---|---|---|---|
+| clean | 1.0000 | **1.0000** | `S₁` = 39.97, exact ID |
+| 1080p → 720p | 0.6667 | **0.6667** | `S₁` = 33.48, exact ID |
+| 1080p → 540p | 0.5000 | **0.5000** | `S₁` = 27.25, exact ID |
+| 1080p → 360p | 0.3333 | **0.3333** | `S₁` = 14.80, exact ID |
+| crop 0.75 + rescale | 1.3333 | **1.3333** | `S₁` = 30.43, exact ID |
+
+A 3× downscale still decodes exactly. Without the search the same attack lost six
+bits. Unmarked clips lock nothing at any scale and return NO_WATERMARK.
 
 **Comparison against §18's list.**
 
@@ -883,11 +944,13 @@ CPU-only deployment is needed.
 | Misalignment > 1 px | 4/5 of the evidence lost (§12) | dense correlator gets to ≤0.5 px | measured, mitigated |
 | Per-frame homography (camera capture) | the per-video geometry lock fails | per-frame feature registration; out of scope per §21 | not addressed |
 | Low-texture / flat patches | whitened variance → 0, `σ̂` unstable | floor `σ̂`; inverse-variance handles the rest | design |
-| Correlated host across patches | patches on similar content give correlated `ν`, so `M_eff` overstates independence | measure the empirical inter-patch correlation of `c` | **open** |
+| Correlated host across patches | patches on similar content give correlated `ν`, so `M_eff` overstates independence | measured: lag-1 autocorrelation of frame-level evidence is 0.069, so frames are effectively independent; within-frame inter-patch correlation is still unmeasured | **partly measured** |
 | Non-diagonal evidence covariance under misalignment | orthogonality holds in the aligned basis only | measure `Cov(c)` versus shift; add Mahalanobis if material | **open** |
 | Non-Gaussian host tails | the `√(2 ln N)` null is optimistic | empirical calibration (§10) | design |
 | Collusion / averaging attack | the same `W` is in every patch of every frame, so averaging many patches recovers it | out of scope (§21 is digital attacks) but a real security property worth recording | **noted** |
 | Whitener ranking flips under compression | §6's ranking is a no-attack ranking | re-measure per condition (Phase E) | **open** |
+| **Selection bias at located sites** | sites are chosen by maximising the statistic they are then judged on | rank-aware order-statistic null (§10) | **measured, fixed** |
+| **Rotation** | the geometry search runs scale-only by default | `geometry="scale+rotation"` exists and costs ~5x | **available, unmeasured** |
 
 The three **open** items are measurements, not unknowns in principle. They are
 scheduled in Phase C/E rather than guessed at here.

@@ -97,6 +97,7 @@ class EvidenceAggregator:
         chat = (w[:, None] * C).sum(0) / w.sum()
         clipped = 0
 
+        lim = None
         if self.huber_c is not None and len(C) > 4:
             for _ in range(self.passes):
                 # Residuals in units of each site's own noise, so a noisy site is not
@@ -110,9 +111,13 @@ class EvidenceAggregator:
                 clipped = int((np.abs(r) > lim).sum())
                 Cc = chat[None, :] + rc * sig[:, None]
                 chat = (w[:, None] * Cc).sum(0) / w.sum()
+        if lim is not None:
             C_eff = chat[None, :] + np.clip((C - chat[None, :]) / sig[:, None],
                                             -lim, lim) * sig[:, None]
         else:
+            # Either Huber is off, or the residual scale came out zero or non-finite --
+            # which happens when every site reports identical evidence. Clipping is
+            # undefined there and unnecessary: there are no outliers in a constant.
             C_eff = C
 
         # Sandwich standard error: the weighted scatter of what actually arrived,
