@@ -414,8 +414,19 @@ have known.
 Decoy keys are the right null because they see *this* clip: same content, same attack,
 same selection, same aggregation, same observation count. Everything that inflates the
 true key's score inflates theirs. Measured on a marked 200-frame clip, the true key
-scored 174.4 against decoys spanning 8.9–19.1. It costs `(1+N)×` the correlation pass,
-in a single pass over the video, and it is worth it — see §23 for how to make it rare.
+scored 174.4 against decoys spanning 8.9–19.1.
+
+Measured as an acceptance test at 60 frames, threshold `z` ≥ 8:
+
+| key | `S₁` | `z` against this clip's decoys | verdict |
+|---|---|---|---|
+| true | 125.2 | **73.5** | accept |
+| decoy A | 7.35 | 1.0 | reject |
+| decoy B | 6.16 | 0.1 | reject |
+
+Nine times the threshold on the true key, an eighth of it on both decoys. It costs
+`(1+N)×` the correlation pass, in a single pass over the video, and it is worth it —
+see §23 for how to make it rare.
 
 **S₃ — split-half agreement.** Decode two disjoint halves of the frames and require
 them to return the same ID.

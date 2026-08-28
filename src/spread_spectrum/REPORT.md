@@ -149,9 +149,17 @@ threshold read off other footage could have known that.
 
 `S₄` reads the same clip with N decoy keys — same content, same attack, same observation
 count, same correlation structure — so whatever inflates the true score inflates theirs.
-Measured at 60 frames: true key `S₁` = 125.2, **decoy z = 73.5**; a decoy key `S₁` = 7.35,
-**decoy z = 1.0**. `DESIGN.md` §23 gives the banding that keeps the (1+N)× cost off the
-easy cases.
+Measured at 60 frames against an acceptance threshold of `z` ≥ 8:
+
+| key | `S₁` | **decoy z** | halves | verdict |
+|---|---|---|---|---|
+| true (seed 8787) | 125.2 | **73.5** | agree | accept |
+| decoy A | 7.35 | **1.0** | disagree | reject |
+| decoy B | 6.16 | **0.1** | disagree | reject |
+
+A factor of nine above the threshold on the true key and a factor of eight below it on
+both decoys. `DESIGN.md` §23 gives the banding that keeps the (1+N)× cost off the easy
+cases.
 
 The mechanism behind the √M growth is worth recording: observations are positively
 correlated, so the true variance of the weighted mean plateaus near `σ²ρ` while the
