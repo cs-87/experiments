@@ -229,6 +229,8 @@ def render_table(jsonl, out, s1_threshold=None):
 
 
 def cmd_sweep(args):
+    if not args.calibration or not Path(args.calibration).exists():
+        args.calibration = None
     ids = CodewordSet.recommended(args.id_count)
     payload, other = same_popcount_pair(ids)
     suite = build_suite()
@@ -243,7 +245,8 @@ def cmd_sweep(args):
     dcfg = DetectorConfig(seed=args.seed, square_size=args.square_size,
                           level=args.level, whiten=args.whiten,
                           weighting=args.weighting, max_sites=args.max_sites,
-                          fpr=args.fpr, geometry=args.geometry, device=args.device)
+                          fpr=args.fpr, geometry=args.geometry, device=args.device,
+                          calibration=args.calibration)
     detector = Detector(ids, dcfg)
     print(detector)
     print(f"payload {uint32_to_hex(payload)}   decoy {uint32_to_hex(other)} "
@@ -303,6 +306,10 @@ def main(argv=None):
     ap.add_argument("--weighting", default="wiener")
     ap.add_argument("--max-sites", type=int, default=48)
     ap.add_argument("--fpr", type=float, default=1e-6)
+    ap.add_argument("--calibration", default="src/spread_spectrum/calibration.json",
+                    help="eval/calibrate.py JSON. Defaults to the checked-in "
+                         "calibration; pass \"\" to fall back to the parametric "
+                         "thresholds, which measured ~1 false positive in 5 cells")
     ap.add_argument("--geometry", default="none")
     ap.add_argument("--device", default=None)
     ap.add_argument("--workdir", default="/tmp/ss_sweep")

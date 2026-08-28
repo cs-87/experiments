@@ -227,7 +227,13 @@ class Detector:
                 agg.add(ev)
             if len(agg) == 0:
                 continue
-            out.append((t, self.tester.test(self.decoder.decode(agg.result()))))
+            r = self.decoder.decode(agg.result())
+            # The curve has to apply the same acceptance rule as detect_frames, or
+            # frames-to-identification reports a frame count at which the detector
+            # would not in fact have accepted.
+            if t >= self.cfg.split_half_min_frames:
+                r.split_half_agrees = self.split_half_agrees(per_frame[:t])
+            out.append((t, self.tester.test(r)))
         return out
 
 
