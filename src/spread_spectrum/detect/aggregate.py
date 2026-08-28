@@ -45,6 +45,7 @@ class Aggregate:
     n_obs: int                # sites contributing
     m_eff: float              # (sum w)^2 / sum w^2 -- effective observation count
     clipped: int              # entries touched by the Huber pass
+    total_weight: float = 0.0  # sum w; zero means no site cleared its selection null
 
 
 class EvidenceAggregator:
@@ -82,6 +83,17 @@ class EvidenceAggregator:
         if w.sum() <= 0:
             w = np.ones_like(w)
 
+        total_weight = float(w.sum())
+        if total_weight <= 0:
+            # Every site came in at or below the null for its own selection rank, so
+            # nothing here is evidence of anything. Fall back to unit weights only to
+            # produce a printable estimate -- total_weight = 0 is what the hypothesis
+            # test reads, and it must reject. Reporting the unit-weighted statistic as
+            # if it were evidence would be actively wrong: sites are chosen by
+            # maximising the statistic, so an unweighted average over them reads
+            # S2 = 83 on unmarked video against a chi2_32 null of 32.
+            w = np.ones_like(w)
+
         chat = (w[:, None] * C).sum(0) / w.sum()
         clipped = 0
 
@@ -112,7 +124,8 @@ class EvidenceAggregator:
         se = np.maximum(se, 1e-12)
 
         return Aggregate(c=chat, se=se, z=chat / se, n_obs=len(C),
-                         m_eff=float(w.sum() ** 2 / (w ** 2).sum()), clipped=clipped)
+                         m_eff=float(w.sum() ** 2 / (w ** 2).sum()), clipped=clipped,
+                         total_weight=total_weight)
 
 
 # The pipeline reads better with two names; they are one operation. See the module

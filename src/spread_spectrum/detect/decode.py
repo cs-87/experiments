@@ -60,6 +60,7 @@ class DecodeResult:
     min_abs_z: float
     n_obs: int
     m_eff: float
+    total_weight: float = 0.0
     accepted: bool = False
     reason: str = ""
     thresholds: dict = field(default_factory=dict)
@@ -108,6 +109,7 @@ class CodewordDecoder:
             min_abs_z=float(np.abs(z).min()),
             n_obs=aggregate.n_obs,
             m_eff=aggregate.m_eff,
+            total_weight=getattr(aggregate, 'total_weight', 0.0),
         )
 
 
@@ -140,6 +142,10 @@ class WatermarkHypothesisTester:
     def test(self, result):
         result.thresholds = {"s1": self.s1_threshold, "s2": self.s2_threshold,
                              "fpr": self.fpr}
+        if result.total_weight <= 0:
+            result.accepted = False
+            result.reason = "no site cleared the null for its selection rank"
+            return result
         ok1 = result.s1 >= self.s1_threshold
         ok2 = result.s2 >= self.s2_threshold
         result.accepted = bool(ok1 and ok2)
