@@ -13,6 +13,7 @@ DetectorConfig -- plus the list of valid IDs.
 """
 
 import argparse
+import itertools
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -27,7 +28,7 @@ from src.spread_spectrum.detect.correlate import PRNCorrelator, ll_planes
 from src.spread_spectrum.detect.decode import CodewordDecoder, WatermarkHypothesisTester
 from src.spread_spectrum.detect.evidence import (PatchEvidenceExtractor,
                                                  PatchReliabilityEstimator)
-from src.spread_spectrum.detect.localise import PatchLocaliser
+from src.spread_spectrum.detect.localise import GeometrySearch, PatchLocaliser
 from src.spread_spectrum.detect.whiten import PreWhitener
 
 
@@ -48,6 +49,8 @@ class DetectorConfig:
     ring_outer: int = 14
     fpr: float = 1e-6
     device: str = None
+    geometry: str = "none"      # "none" | "scale" | "scale+rotation"
+    geometry_frames: int = 1
 
     @property
     def prn_side(self):
@@ -93,6 +96,8 @@ class Detector:
             reliability=PatchReliabilityEstimator(inner=self.cfg.ring_inner,
                                                   outer=self.cfg.ring_outer),
             weighting=self.cfg.weighting, rank_aware=self.cfg.rank_aware)
+        self.geometry = None                 # (scale, rotation), locked on first use
+        self.geometry_table = None
         self.decoder = CodewordDecoder(codeword_set)
         self.tester = WatermarkHypothesisTester(len(codeword_set), fpr=self.cfg.fpr)
 
@@ -100,8 +105,34 @@ class Detector:
         return (f"Detector({self.cfg.square_size}px/L{self.cfg.level}, "
                 f"whiten={self.cfg.whiten}, {self.decoder!r})")
 
+    def _search(self):
+        rot = ((-1.0, -0.5, 0.0, 0.5, 1.0) if self.cfg.geometry == "scale+rotation"
+               else (0.0,))
+        cheap = PatchLocaliser(self.correlator, level=self.cfg.level,
+                               nms_radius_px=self.cfg.nms_radius_px, max_sites=16)
+
+        def evidence_fn(luma):
+            planes = {ph: self.whitener(pl)
+                      for ph, pl in ll_planes(luma, self.cfg.level).items()}
+            en = cheap.energies(planes)
+            return self.extractor.extract(planes, en,
+                                          cheap.sites(planes, en, luma.shape))
+
+        return GeometrySearch(evidence_fn, rotations=rot)
+
+    def lock_geometry(self, frames, verbose=False):
+        """
+        Estimate the global scale/rotation once and hold it for the whole video.
+        `frames` is a short list of luma planes. Returns (scale, rotation).
+        """
+        s, r, table = self._search().estimate(frames, verbose=verbose)
+        self.geometry, self.geometry_table = (s, r), table
+        return s, r
+
     def frame_evidence(self, luma, frame_index=-1):
         """All located sites of one frame, as weighted 32-D evidence."""
+        if self.geometry is not None:
+            luma = GeometrySearch.warp(luma, *self.geometry)
         planes = {ph: self.whitener(pl)
                   for ph, pl in ll_planes(luma, self.cfg.level).items()}
         energies = self.localiser.energies(planes)
@@ -121,6 +152,13 @@ class Detector:
         """
         agg = EvidenceAggregator(huber_c=self.cfg.huber_c)
         per_frame, t0 = [], time.time()
+        frames = iter(frames)
+        if self.cfg.geometry != "none" and self.geometry is None:
+            head = [next(frames) for _ in range(self.cfg.geometry_frames)]
+            s, r = self.lock_geometry([f for _, f in head], verbose=progress)
+            if progress:
+                print(f"geometry locked: scale {s:.4f} rotation {r:+.2f}")
+            frames = itertools.chain(head, frames)
         for idx, luma in frames:
             ev = self.frame_evidence(luma, idx)
             per_frame.append(ev)
@@ -176,6 +214,8 @@ def main(argv=None):
     ap.add_argument("--max-sites", type=int, default=48)
     ap.add_argument("--fpr", type=float, default=1e-6)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--geometry", default="none",
+                    choices=["none", "scale", "scale+rotation"])
     ap.add_argument("--curve", action="store_true", help="print the acquisition curve")
     args = ap.parse_args(argv)
 
@@ -188,7 +228,7 @@ def main(argv=None):
     cfg = DetectorConfig(seed=args.seed, square_size=args.square_size,
                          level=args.level, whiten=args.whiten,
                          weighting=args.weighting, max_sites=args.max_sites,
-                         fpr=args.fpr, device=args.device)
+                         fpr=args.fpr, device=args.device, geometry=args.geometry)
     det = Detector(ids, cfg)
     print(det)
     result, per_frame = det.detect(args.video, args.max_frames, args.stride,

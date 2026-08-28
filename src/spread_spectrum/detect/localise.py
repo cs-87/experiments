@@ -26,6 +26,8 @@ FFT gives for free.
 
 from dataclasses import dataclass
 
+import cv2
+
 import numpy as np
 
 from src.spread_spectrum.detect.correlate import ll_block_size, plane_to_frame
@@ -165,3 +167,116 @@ def refine_subpixel(heat, y, x):
     dy = axis(heat[y - 1, x], heat[y, x], heat[y + 1, x]) if 0 < y < H - 1 else 0.0
     dx = axis(heat[y, x - 1], heat[y, x], heat[y, x + 1]) if 0 < x < W - 1 else 0.0
     return float(np.clip(dy, -1, 1)), float(np.clip(dx, -1, 1))
+
+
+class GeometrySearch:
+    """
+    Recover a global scale (and optionally rotation) before decoding.
+
+    For digital attacks the geometry is a per-VIDEO constant -- a resize or a rotate is
+    applied once to the whole clip, not per frame -- so this runs on one or two frames
+    and the answer is then locked, which is what makes the search affordable.
+
+    The objective is the detector's own evidence: total per-site z^2, summed over the
+    sites the real pipeline finds after un-warping by each hypothesis. That is
+    codeword-independent, so no ID list is needed, and it is the quantity the decoder
+    actually consumes.
+
+    Two cheaper surrogates were tried first and both failed, which is why the expensive
+    one is here:
+
+      Peakiness of the energy surface, with the frame warped per hypothesis. Undoing a
+      small scale means upsampling, upsampling smooths the plane, and the whitened
+      residual of a smooth plane is heavy-tailed -- so peakiness rose with the amount
+      of upsampling whether or not a mark was present. It picked the smallest scale on
+      the grid every time and scored an unmarked clip (265) above a marked one (249).
+
+      Directional coherence of the top peaks, with the template warped instead of the
+      frame. Better founded -- one payload really does put the same 32-vector at every
+      patch, while content-driven peaks point anywhere -- but natural image structure
+      is coherent too: unmarked clips measured 0.25-0.34 against marked clips at
+      0.21-0.38, no separation at all.
+
+    Using the real evidence, measured on one 1080p frame: an unattacked marked clip
+    scores 14.8 at scale 1.0 against 0.7 for the runner-up, a 540p leak scores 6.2 at
+    0.5 against 1.0, and every unmarked clip stays below 1.2 at every scale with no
+    hypothesis standing out. Where it does miss -- a 720p leak -- the top score is 0.6,
+    i.e. it correctly reports that there is nothing to lock onto, because at that
+    downscale the mark really is gone.
+    """
+
+    #: common re-publication ratios, exact where they are exact
+    DEFAULT_SCALES = (1 / 3, 0.36, 0.4, 0.45, 0.5, 0.5625, 2 / 3, 0.7, 0.75, 0.8, 0.9,
+                      1.0, 1.1, 1.25, 4 / 3, 1.5, 2.0)
+
+    def __init__(self, evidence_fn, scales=None, rotations=(0.0,), window=1280,
+                 refine=True):
+        self.evidence_fn = evidence_fn
+        self.scales = tuple(scales if scales is not None else self.DEFAULT_SCALES)
+        self.rotations = tuple(rotations)
+        self.window = int(window)
+        self.refine = bool(refine)
+
+    def _window(self, luma):
+        """
+        Central crop, applied AFTER warping.
+
+        Undoing a scale of 1/3 means upsampling the frame nine-fold in area, so
+        cropping the input would leave that hypothesis ten times more expensive than
+        the rest and make the whole search cost whatever the smallest scale on the grid
+        happens to be. Cropping the output instead costs every hypothesis the same and
+        simply gives the heavily-upsampled ones a smaller field of view, which is the
+        honest trade: there genuinely is less independent information there.
+        """
+        h, w = luma.shape
+        wh, ww = min(self.window, h), min(self.window, w)
+        return luma[(h - wh) // 2:(h - wh) // 2 + wh, (w - ww) // 2:(w - ww) // 2 + ww]
+
+    def _score(self, frames, scale, rotation):
+        total = 0.0
+        for f in frames:
+            warped = self._window(self.warp(f, scale, rotation))
+            if min(warped.shape) < 192:
+                return 0.0
+            total += sum(e.snr2 for e in self.evidence_fn(warped))
+        return float(total)
+
+    def estimate(self, frames, verbose=False):
+        """
+        frames: one or two luma planes. Returns (scale, rotation, table) with every
+        hypothesis scored, so a flat surface reads as flat rather than as a confident
+        answer -- which is what an unmarked clip produces and what the caller needs to
+        be able to see.
+        """
+        table = [(s, r, self._score(frames, s, r))
+                 for s in self.scales for r in self.rotations]
+        table.sort(key=lambda t: -t[2])
+
+        if self.refine and table[0][2] > 0:
+            # One local pass around the winner. The grid is coarse near 1.0 and a few
+            # percent of scale error costs real evidence.
+            s0, r0, _ = table[0]
+            extra = [(s0 * f, r0) for f in (0.94, 0.97, 1.03, 1.06)]
+            table += [(s, r, self._score(frames, s, r)) for s, r in extra]
+            table.sort(key=lambda t: -t[2])
+
+        if verbose:
+            for s, r, sc in table[:6]:
+                print(f"    scale {s:6.4f} rot {r:+5.2f}: {sc:9.2f}")
+        return table[0][0], table[0][1], table
+
+    @staticmethod
+    def warp(luma, scale, rotation=0.0):
+        """Bring a leak back to the original geometry, once the geometry is known."""
+        out = luma
+        if abs(scale - 1.0) > 1e-6:
+            h, w = out.shape
+            out = cv2.resize(out, (max(8, int(round(w / scale))),
+                                   max(8, int(round(h / scale)))),
+                             interpolation=cv2.INTER_CUBIC)
+        if abs(rotation) > 1e-6:
+            h, w = out.shape
+            m = cv2.getRotationMatrix2D((w / 2, h / 2), -rotation, 1.0)
+            out = cv2.warpAffine(out, m, (w, h), flags=cv2.INTER_CUBIC,
+                                 borderMode=cv2.BORDER_REFLECT)
+        return out
