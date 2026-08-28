@@ -419,6 +419,29 @@ verified — so the machine holds only two distinct sources. Running decoy keys
 against a *genuinely marked* clip is also the strongest false-positive case
 available: a hit there means the detector is reading content, not the mark.
 
+**Measured, and the parametric threshold is badly wrong.** 24 decoy keys on unmarked
+1080p, 8 frames:
+
+| | value |
+|---|---|
+| observed `S₂` inflation over the χ²₃₂ null | **1.73×** |
+| decoy runs admitted at the parametric threshold | **3 of 24** |
+| unmarked sweep cells admitted at the parametric threshold | **6 of 30** |
+| `S₁` threshold, parametric, nominal FPR 1e-6 | 6.81 |
+| **`S₁` threshold, empirical (Gumbel tail), FPR 1e-6** | **17.76** |
+| `S₂` threshold, parametric → empirical | 85.2 → 147.6 |
+
+A nominal 1e-6 threshold delivering roughly one false positive in five cells is not a
+calibration error at the margin, it is the wrong threshold. Re-scored at `S₁` ≥ 17.76
+the whole sweep has **zero** false positives and no false attributions, and every
+attack that was recovering the payload still recovers it except blur σ2.0, which drops
+to a conservative miss. `WatermarkHypothesisTester.from_calibration()` is the intended
+constructor; the parametric values survive only as a labelled fallback.
+
+The 1e-6 and 1e-9 rows are extrapolations from 24 samples through a fitted tail, and
+are labelled as such in the output. They show how far the observed null sits from the
+parametric one; they do not certify a rate that has not been observed.
+
 ---
 
 ## 11. Codeword and Hamming-distance analysis
@@ -866,6 +889,42 @@ Comparing per-bit BER directly would be meaningless.
 
 ---
 
+### Measured results
+
+First full sweep: 30 attacks × 3 cases, 128/L1 `α`=3, 20 frames, scale search on,
+scored against the **calibrated** threshold of §10 (`S₁` ≥ 17.76). Full table in
+`FINDINGS.md`, raw rows in `findings.jsonl`.
+
+**17 of 30 attacks recover the exact 32-bit payload, with zero false positives and no
+false attributions.**
+
+| passes exactly | `S₁` |
+|---|---|
+| clean | 43.8 |
+| H.264 CRF 23 | 25.1 |
+| 1080p → 720p (scale found 0.6667) | 41.2 |
+| 1080p → 540p (scale found 0.5000) | 37.8 |
+| crop 0.75 · crop 0.75 + rescale | 30.7 · 31.6 |
+| resample 0.5 · translate 2 px · sharpen 1.0 · blur σ1.0 | 34.1 · 43.6 · 44.0 · 29.9 |
+| gamma 1.6 · contrast 1.5 · saturation 0 · grayscale | 46.3 · 40.3 · 38.4 · 43.8 |
+| **frame drop 20 % · half frame rate · reverse · interpolate** | **40.0 · 30.5 · 43.8 · 31.4** |
+
+The temporal row is the one worth pausing on: dropping a fifth of the frames, halving
+the frame rate, playing the clip backwards and averaging adjacent frames all cost
+observations and nothing else. That is what having no temporal code buys, and it is
+measured rather than argued.
+
+| fails | why |
+|---|---|
+| H.264 CRF 28 / 32 / 36, H.265 CRF 28 / 32, 1 Mb/s, 500 kb/s | the white carrier (§4) |
+| noise σ = 10 | same band |
+| combined chains containing heavy compression | same |
+| 1080p → 360p at 20 frames | marginal; recovered exactly in the isolated 8-frame test with a clean scale lock, so a lock-stability limit rather than a signal limit |
+
+**Compression past CRF 23 is the single first-order weakness**, and it is the same
+mechanism in every failing row. §21 measures the fix.
+
+
 ## 21. Perceptual quality
 
 Perception is the hard constraint, so it gates every robustness claim rather
@@ -903,6 +962,51 @@ between frames is a real artefact this scheme can produce and a still-frame
 metric cannot see.
 
 ---
+
+### Measured
+
+Ten frames of `inputs/30.mp4`, three configurations at matched **local** mark
+amplitude, and one at matched **frame** PSNR:
+
+| config | chip | patches/f | coverage | mark RMS | peak | frame PSNR | marked-px PSNR | SSIM | LPIPS | flicker |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 128/L1 `α`=3 | 2×2 | 7.5 | 5.1 % | 1.78 | 5.0 | 56.11 | 43.14 | 0.9990 | 0.00011 | 0.564 |
+| **256/L2 `α`=3.75** | 4×4 | 6.7 | 12.7 % | 1.27 | **3.0** | **55.07** | **46.08** | 0.9990 | **0.00007** | 0.622 |
+| 256/L2 `α`=6 | 4×4 | 6.7 | 18.2 % | 1.78 | 5.0 | 50.56 | 43.14 | 0.9973 | 0.00029 | 1.045 |
+| 512/L3 `α`=12 | 8×8 | 3.7 | 30.2 % | 1.77 | 5.0 | 48.43 | 43.15 | 0.9972 | 0.00050 | 1.221 |
+
+The frame-PSNR difference between the first two rows is entirely coverage: a 256 patch
+covers four times the area, so matching total distortion means running a *lower* local
+amplitude — which is why the 4×4 chip at `α`=3.75 is perceptually **better** than the
+2×2 at `α`=3 on marked-pixel PSNR (+2.9 dB), peak excursion (3.0 vs 5.0), and LPIPS,
+with SSIM identical. Only flicker is marginally worse.
+
+### And what that buys, end to end
+
+| config | frame PSNR | CRF 23 | CRF 28 |
+|---|---|---|---|
+| 128/L1 `α`=3 | 56.11 | `S₁` 25.1, 32/32 ✓ | `S₁` 5.4, **16/32 — noise** |
+| 256/L2 `α`=3.75 | 55.07 | `S₁` 24.5, 32/32 ✓ | `S₁` 7.5, **32/32 bits, below threshold** |
+| 256/L2 `α`=6 | 50.56 | `S₁` 82.3, 32/32 ✓ | `S₁` 42.1, 32/32 ✓ |
+
+Read the middle row carefully: at matched frame PSNR the 4×4 chip **gets every bit
+right at CRF 28**, where the 2×2 chip returns chance. The payload is there; what is
+missing is the confidence to accept it at a 1e-6 false-positive rate on 20 frames, and
+`S₁` grows as √frames.
+
+**Amplitude cannot be traded down freely, and this was not obvious.** `S₁` at CRF 23
+is 82.3 at `α`=6 and 24.5 at `α`=3.75 — a factor of 3.4 for a factor of 1.6 in
+amplitude, far worse than linear. Compression is a quantiser, not additive noise:
+below the quantiser step the mark is destroyed rather than attenuated. Any ALPHA
+reduction has to be measured, never scaled.
+
+**Recommendation, stated as the trade it is.** Chip 4×4 is the right move, but it is a
+curve rather than a free lunch: at strictly matched frame PSNR it converts CRF 28 from
+unrecoverable to recoverable-but-unconfident, and spending 5.5 dB of frame PSNR
+(`α`=6) makes CRF 28 comfortable. Which point to pick is a viewing decision on real
+content, not a metric decision — every LPIPS value in the table is far below any
+perceptibility threshold.
+
 
 ## 22. ECC strategy
 
@@ -963,13 +1067,16 @@ CPU-only deployment is needed.
 
 | failure | mechanism | mitigation | status |
 |---|---|---|---|
-| **Blur / heavy downscale** | the carrier is white in LL; half its energy is above the band these attacks preserve (§4) | chip size (§21) — an embedding change | measured, unmitigated |
+| **Compression past H.264 CRF 23** | the carrier is white in LL; half its energy is above the band compression keeps (§4). The single first-order weakness — every failing sweep row is this mechanism | chip size: 4×4 moves the limit to CRF 28 (§21) — an embedding change, kept separate per §36 | **measured, fix measured, not applied** |
+| Blur σ ≥ 2, noise σ ≥ 10 | same band | same fix; blur σ2.0 recovers 32/32 but below the calibrated threshold | measured |
+| **Parametric acceptance thresholds** | Gaussian/χ² null is optimistic by 2.6× on `S₁` | empirical calibration from decoy keys (§10) | **measured, fixed** |
 | Misalignment > 1 px | 4/5 of the evidence lost (§12) | dense correlator gets to ≤0.5 px | measured, mitigated |
 | Per-frame homography (camera capture) | the per-video geometry lock fails | per-frame feature registration; out of scope per §21 | not addressed |
 | Low-texture / flat patches | whitened variance → 0, `σ̂` unstable | floor `σ̂`; inverse-variance handles the rest | design |
 | Correlated host across patches | patches on similar content give correlated `ν`, so `M_eff` overstates independence | measured: lag-1 autocorrelation of frame-level evidence is 0.069, so frames are effectively independent; within-frame inter-patch correlation is still unmeasured | **partly measured** |
 | Non-diagonal evidence covariance under misalignment | orthogonality holds in the aligned basis only | measure `Cov(c)` versus shift; add Mahalanobis if material | **open** |
-| Non-Gaussian host tails | the `√(2 ln N)` null is optimistic | empirical calibration (§10) | design |
+| Non-Gaussian host tails | the `√(2 ln N)` null is optimistic — measured 1.73× on `S₂` | empirical calibration (§10) | **measured, fixed** |
+| **Threshold vs observation count** | at 200 frames, CRF-28/32/36 cells reported `S₁` = 15.5–17.7 with the payload at chance. Either the null grows with `M` or the standard error shrinks faster than 1/√`M` | the 8-frame calibrated threshold (17.76) happens to exclude all three, but the threshold must be calibrated *per observation count*, not once | **being measured** |
 | Collusion / averaging attack | the same `W` is in every patch of every frame, so averaging many patches recovers it | out of scope (§21 is digital attacks) but a real security property worth recording | **noted** |
 | Whitener ranking flips under compression | §6's ranking is a no-attack ranking | re-measure per condition (Phase E) | **open** |
 | **Selection bias at located sites** | sites are chosen by maximising the statistic they are then judged on | rank-aware order-statistic null (§10) | **measured, fixed** |
@@ -989,11 +1096,11 @@ Mapped onto `prompt.md` §32, with the ordering changed in one place and why.
 | **0** | Bug fixes: `uint8` wrap in embed, duplicate `FFmpegWriter`, EOF guard, patch spacing, codebook dead code | **done** |
 | **B** | Codeword design (`ids.py`) — brought forward from §32 Phase 7, because it is the largest free gain and its numbers are needed to size everything else | **done** |
 | **A** | This document | **done** |
-| **C** | §32 Phase 1 — classical baseline: whiten → correlate → localise → evidence → aggregate → decode → test, plus §34's unit tests | next |
-| **D** | Evaluation harness: attack model, resumable sweep, null calibration | |
-| **E** | §32 Phases 2–3 — preprocessing sweep under attack, reliability estimator | |
-| **F** | §32 Phase 4 — learned host suppression, **only if** E leaves a measured gap | |
-| **G** | Embedding track, separate per §36: chip size at perceptually-matched strength, peak limiting | |
+| **C** | §32 Phase 1 — classical baseline: whiten → correlate → localise → evidence → aggregate → decode → test, plus §34's 36 unit tests | **done** |
+| **D** | Evaluation harness: 84-attack model, resumable sweep, null calibration, perceptual metrics. First full sweep and calibration measured (§20, §10) | **done** |
+| **G** | Embedding track, separate per §36: chip size measured at both matched local amplitude and matched frame PSNR (§21). **Not applied to `embed.py`** — it is a trade curve and picking a point needs a viewing decision | **measured, awaiting a decision** |
+| **E** | §32 Phases 2–3 — whitener sweep *under attack* (§6's ranking is a no-attack ranking), reliability estimator | next |
+| **F** | §32 Phase 4 — learned host suppression, **only if** E leaves a measured gap. Given that the binding limit is compression rather than host noise, the gap to close may be smaller than §6's 7.5 dB suggests | |
 
 §32 Phase 5 (temporal aggregation) collapses into C — there is nothing to
 synchronise (§15). §32 Phase 6 (robust localisation) collapses into C — the
