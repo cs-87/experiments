@@ -118,6 +118,7 @@ def measure(detector, video, attack, expected, frames, stride, workdir):
         "s2": round(result.s2, 1),
         "minz": round(result.min_abs_z, 2),
         "total_weight": float(result.total_weight),
+        "halves_agree": result.split_half_agrees,
         "sec": round(time.time() - t0, 1),
     }
     if expected is None:

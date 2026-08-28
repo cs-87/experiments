@@ -62,16 +62,21 @@ class DecodeResult:
     n_obs: int
     m_eff: float
     total_weight: float = 0.0
+    split_half_agrees: bool = None   # None = not checked
     accepted: bool = False
     reason: str = ""
     thresholds: dict = field(default_factory=dict)
 
     def __str__(self):
         verdict = self.hex if self.accepted else "NO_WATERMARK"
+        split = ("" if self.split_half_agrees is None
+                 else "  halves agree" if self.split_half_agrees
+                 else "  HALVES DISAGREE")
         return (f"{verdict}  S1={self.s1:.2f} (2nd {self.s1_second:.2f}, "
                 f"margin {self.margin:.2f})  S2={self.s2:.1f}  "
                 f"min|z|={self.min_abs_z:.2f}  obs={self.n_obs} "
-                f"(M_eff={self.m_eff:.1f}){'' if self.accepted else '  -- ' + self.reason}")
+                f"(M_eff={self.m_eff:.1f}){split}"
+                f"{'' if self.accepted else '  -- ' + self.reason}")
 
 
 class CodewordDecoder:
@@ -163,6 +168,18 @@ class WatermarkHypothesisTester:
         if result.total_weight <= 0:
             result.accepted = False
             result.reason = "no site cleared the null for its selection rank"
+            return result
+        if result.split_half_agrees is False:
+            # Partial recovery is the dangerous failure mode, not absence. With some
+            # bits recovered and some at chance, the search over 200,000 hypotheses
+            # finds a codeword that fits the surviving evidence AND the noise, and it
+            # can clear a threshold set against H0 while being the wrong ID. Measured:
+            # at CRF 28 over 200 frames, S1 = 17.7 with 24 of 32 bits correct. Two
+            # disjoint halves of the frames agreeing on a wrong ID has probability of
+            # order 1/200000; agreeing on the right one is what a real mark does.
+            result.accepted = False
+            result.reason = ("halves of the clip decode to different IDs -- partial "
+                             "recovery, not an identification")
             return result
         ok1 = result.s1 >= self.s1_threshold
         ok2 = result.s2 >= self.s2_threshold

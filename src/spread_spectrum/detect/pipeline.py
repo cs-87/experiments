@@ -49,6 +49,7 @@ class DetectorConfig:
     ring_outer: int = 14
     fpr: float = 1e-6
     calibration: str = None   # eval/calibrate.py output; strongly preferred
+    split_half_min_frames: int = 4
     device: str = None
     geometry: str = "none"      # "none" | "scale" | "scale+rotation"
     geometry_frames: int = 1
@@ -176,7 +177,36 @@ class Detector:
                   f"{time.time() - t0:.1f}s{pad}")
         if len(agg) == 0:
             raise ValueError("no evidence found in any frame")
-        return self.tester.test(self.decoder.decode(agg.result())), per_frame
+        result = self.decoder.decode(agg.result())
+        if len(per_frame) >= self.cfg.split_half_min_frames:
+            result.split_half_agrees = self.split_half_agrees(per_frame)
+        return self.tester.test(result), per_frame
+
+    def split_half_agrees(self, per_frame):
+        """
+        Do two disjoint halves of the frames decode to the same ID?
+
+        Split by frame PARITY, not into a first and second half: content drifts across
+        a clip, and a temporal split would confound "different content" with
+        "independent noise". Parity leaves both halves with the same content
+        distribution and the same length, so a disagreement means the evidence is not
+        actually pinning down one codeword.
+
+        Costs nothing extra -- the per-frame evidence is already in hand, and each half
+        is one more 200,000 x 32 GEMM.
+        """
+        halves = [EvidenceAggregator(huber_c=self.cfg.huber_c) for _ in range(2)]
+        for i, ev in enumerate(per_frame):
+            halves[i % 2].add(ev)
+        if any(len(h) == 0 for h in halves):
+            return None
+        ids = []
+        for h in halves:
+            try:
+                ids.append(self.decoder.decode(h.result()).watermark_id)
+            except ValueError:
+                return None
+        return ids[0] == ids[1]
 
     def detect(self, video_path, max_frames=None, stride=1, progress=False):
         return self.detect_frames(iter_luma(video_path, max_frames, stride),

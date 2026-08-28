@@ -166,3 +166,57 @@ def test_hypothesis_thresholds_tighten_with_the_codebook_size():
     big = WatermarkHypothesisTester(200_000, fpr=1e-6).s1_threshold
     assert big > small
     assert WatermarkHypothesisTester(200_000, fpr=1e-9).s1_threshold > big
+
+
+def test_calibrated_thresholds_are_stricter_than_parametric():
+    """
+    The parametric null is optimistic and the calibration file records by how much.
+    Measured: a nominal 1e-6 parametric threshold admitted 3 of 24 decoy-key runs and
+    6 of 30 unmarked sweep cells. If a future change makes the calibrated threshold
+    LOOSER than the parametric one, either the calibration is broken or the detector
+    changed enough that it has to be redone -- both worth failing on.
+    """
+    import json
+    import pathlib
+    path = pathlib.Path("src/spread_spectrum/calibration.json")
+    if not path.exists():
+        return                                    # calibration not run in this tree
+    rep = json.loads(path.read_text())
+    for fpr, t in rep["unmarked"]["thresholds"].items():
+        assert t["s1_empirical_gumbel"] > t["s1_parametric"], (fpr, t)
+        assert t["s2_empirical_scaled_chi2"] > t["s2_parametric"], (fpr, t)
+    tester = WatermarkHypothesisTester.from_calibration(path, 200_000, fpr=1e-6)
+    assert tester.s1_threshold > WatermarkHypothesisTester(200_000, fpr=1e-6).s1_threshold
+
+
+def test_geometry_search_anchors_to_identity_without_evidence():
+    """
+    The scale search maximises the evidence the decision is later made on, so left
+    unanchored it invents detections: measured, an unmarked clip locked scale 1.1 and
+    came out at S1 = 7.43, S2 = 91.4, over both acceptance thresholds. Anchored it
+    reads S1 = 4.3.
+
+    Here the objective returns pure noise, so no hypothesis deserves to win.
+    """
+    from src.spread_spectrum.detect.localise import GeometrySearch
+    rng = np.random.default_rng(0)
+
+    class _Ev:
+        def __init__(self, v):
+            self.snr2 = v
+
+    # noise: every hypothesis scores about the same, none stands out
+    flat = GeometrySearch(lambda luma: [_Ev(rng.uniform(0, 0.05)) for _ in range(8)])
+    s, r, table = flat.estimate([synthetic_host((512, 512))])
+    assert (s, r) == (1.0, 0.0), f"locked {s} on noise: {table[:3]}"
+
+    # a genuine lock: evidence peaks sharply at one scale and nowhere else.
+    # The objective only sees the warped frame, so it recovers the hypothesis from the
+    # frame height -- warp() resizes by 1/scale.
+    def peaked(luma, truth=0.5):
+        est = 512.0 / luma.shape[0]
+        return [_Ev(4.0 * np.exp(-((est - truth) / 0.02) ** 2)) for _ in range(8)]
+
+    sharp = GeometrySearch(peaked, scales=(0.4, 0.5, 0.75, 1.0, 1.25))
+    s2, _, table2 = sharp.estimate([synthetic_host((512, 512))])
+    assert abs(s2 - 0.5) < 0.03, f"failed to lock a clear peak: {table2[:3]}"

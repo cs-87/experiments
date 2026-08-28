@@ -286,9 +286,7 @@ class GeometrySearch:
         best_s, best_r, best = table[0]
         identity = next((v for s, r, v in table
                          if abs(s - 1.0) < 1e-9 and abs(r) < 1e-9), 0.0)
-        others = np.array([v for s, r, v in table[1:]], float)
-        mad = 1.4826 * np.median(np.abs(others - np.median(others))) if others.size else 0.0
-        z = (best - np.median(others)) / max(mad, 1e-9) if others.size else 0.0
+        z = self._lock_z(table)
 
         n = max(len(frames), 1)
         locked = (abs(best_s - 1.0) < 1e-9 and abs(best_r) < 1e-9) or (
@@ -304,19 +302,41 @@ class GeometrySearch:
             return 1.0, 0.0, table
         return best_s, best_r, table
 
-    @staticmethod
-    def lock_quality(table):
-        """(z of the winner over the rest of the grid, winner score, identity score)."""
+    #: hypotheses within this factor of the winner are treated as the same hypothesis
+    NEIGHBOUR_FACTOR = 1.12
+
+    @classmethod
+    def _lock_z(cls, table):
+        """
+        How far the winner stands above the unrelated hypotheses.
+
+        The background excludes everything within NEIGHBOUR_FACTOR of the winning
+        scale. Those are not independent hypotheses -- the refine pass deliberately
+        places extra ones a few percent either side of the winner, and a real peak has
+        real shoulders -- so counting them as background inflates its spread and
+        deflates the very statistic that decides whether to trust the lock. Measured on
+        a synthetic sharp peak, including the shoulders dropped z from comfortably
+        above the threshold to 11.8 and the lock was refused.
+        """
+        if len(table) < 3:
+            return 0.0
+        best_s, _, best = table[0]
+        lo, hi = best_s / cls.NEIGHBOUR_FACTOR, best_s * cls.NEIGHBOUR_FACTOR
+        others = np.array([v for s, _, v in table[1:] if not lo <= s <= hi], float)
+        if others.size < 2:
+            others = np.array([v for _, _, v in table[1:]], float)
+        med = np.median(others)
+        mad = 1.4826 * np.median(np.abs(others - med))
+        return float((best - med) / max(mad, 1e-9))
+
+    @classmethod
+    def lock_quality(cls, table):
+        """(z of the winner over the unrelated hypotheses, winner score, identity score)."""
         if not table:
             return 0.0, 0.0, 0.0
-        best = table[0][2]
         identity = next((v for s, r, v in table
                          if abs(s - 1.0) < 1e-9 and abs(r) < 1e-9), 0.0)
-        others = np.array([v for _, _, v in table[1:]], float)
-        if others.size == 0:
-            return 0.0, best, identity
-        mad = 1.4826 * np.median(np.abs(others - np.median(others)))
-        return float((best - np.median(others)) / max(mad, 1e-9)), float(best), float(identity)
+        return cls._lock_z(table), float(table[0][2]), float(identity)
 
     @staticmethod
     def warp(luma, scale, rotation=0.0):
