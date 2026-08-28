@@ -586,7 +586,30 @@ Measured with the working objective, marked clip — every scale recovered exact
 | crop 0.75 + rescale | 1.3333 | **1.3333** | `S₁` = 30.43, exact ID |
 
 A 3× downscale still decodes exactly. Without the search the same attack lost six
-bits. Unmarked clips lock nothing at any scale and return NO_WATERMARK.
+bits.
+
+**The search must be anchored to "no geometric change", and this is not optional.**
+It maximises the same evidence the decision is later made on, so left free it is a
+second layer of selection bias stacked on the one §10 already corrects. On an unmarked
+clip it locks whichever of ~21 hypotheses looks best, and the resampling that follows
+inflates the null — measured `S₂` = 34 with the search off against 74 with it on. At
+one setting it produced an outright **false positive**: an unmarked clip locked to
+scale 1.1 and came out at `S₁` = 7.43, `S₂` = 91.4, over both acceptance thresholds.
+
+A non-identity geometry therefore has to earn it three ways — stand out from the grid
+by ≥ 15 robust standard deviations above the median hypothesis, beat the identity
+hypothesis by 1.5×, and clear an absolute per-frame evidence floor. Those come from
+the measured gap rather than from a guess:
+
+| | lock quality `z` | outcome |
+|---|---|---|
+| marked, unattacked | **124** | locks 1.0000 |
+| marked, 540p leak | **53** | locks 0.5000 |
+| unmarked, clean | 5.0 | anchored → `S₁` 4.96 |
+| unmarked, 540p | 7.4 | anchored → `S₁` 5.86 |
+
+The asymmetry is deliberate: an unnecessary resample costs evidence, a missed one
+costs all of it, but a spurious one costs evidence *and* invents a detection.
 
 **Comparison against §18's list.**
 
