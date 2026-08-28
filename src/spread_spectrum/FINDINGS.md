@@ -58,3 +58,16 @@ Scored against a **calibrated** acceptance threshold of S1 >= 17.76 (see `calibr
 
 **5/10 attacks recovered the exact payload; 0 false positive(s) on the unmarked control.**
 
+## chip4_psnrmatched — patch 256 / DWT L2 / alpha 3.75 (chip 4x4 px), 20 frames
+
+| attack | scale | marked: bits | marked: S1 | marked | unmarked: S1 | unmarked | other ID: S1 | other ID |
+|---|---|---|---|---|---|---|---|---|
+| `blur_2.0` | 1.0 | 32/32 | 52.4 | ok | 6.0 | ok |  | - |
+| `clean` | 1.0 | 32/32 | 74.8 | ok | 4.3 | ok |  | - |
+| `h264_crf23` | 1.0 | 32/32 | 24.5 | ok | 3.4 | ok |  | - |
+| `h264_crf28` | 1.0 | 32/32 | 7.5 | missed | 3.3 | ok |  | - |
+| `h264_crf32` | 1.0 | 26/32 | 2.8 | missed | 6.4 | ok |  | - |
+| `scale_540p` | 0.5 | 32/32 | 74.3 | ok | 5.3 | ok |  | - |
+
+**4/6 attacks recovered the exact payload; 0 false positive(s) on the unmarked control.**
+

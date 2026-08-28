@@ -54,10 +54,20 @@ at H.264 CRF 23, detected blind against a 200 000-ID codebook:
 | 40 frames | 79.6 | 6 560 | 32/32 exact, weakest bit at 10.3σ |
 | unwatermarked control | 4.4 | 34.4 | NO_WATERMARK |
 
-against an acceptance threshold of `S₁` > 6.81. One frame is enough. With the scale
-search on, a 1080p → 360p downscale still decodes exactly.
+One frame is enough, and with the scale search on a 1080p → 360p downscale still
+decodes exactly.
 
-Three levers dominate, in order of size:
+Across a 30-attack sweep at the **calibrated** acceptance threshold (§10, §20):
+**18 of 30 attacks recover the exact 32-bit payload, with zero false positives and no
+false attributions.** Every photometric attack, every temporal attack, crop,
+crop+rescale, translate, sharpen, resample, blur σ1.0, and 1080p→720p and →540p with
+the scale recovered exactly.
+
+**Everything that fails, fails for one reason: compression past H.264 CRF 23.** The
+carrier is white in the DWT LL domain, so half its energy sits above the band a codec
+keeps. That is the whole robustness story, and §21 measures the fix.
+
+Three detector-side levers dominate, in order of size:
 
 | lever | measured gain | cost |
 |---|---|---|
@@ -65,10 +75,17 @@ Three levers dominate, in order of size:
 | Designing the 200 000 IDs as an ECC | 7.8 dB at `d_min`=6 | zero |
 | Patch spacing fix (`utils/patch.py`) | 7.5 → 27.0 patches/frame, +5.6 dB | one argument |
 
-And one embedding-side lever, kept separate per §36: at **identical** pixel-domain
-mark RMS, moving the carrier from a 2×2 to a 4×4 chip cut per-patch BER 3–9× on
-every attack tested (§21 has the caveat that PSNR-matched is not
-perception-matched).
+And two corrections that are not optional, both of which had produced false positives
+before they were found: the localiser and the scale search each maximise the statistic
+the decision is later made on, and each needs an order-statistic correction (§10, §12).
+The parametric acceptance threshold is also wrong by 2.6× — nominally 1e-6, measured at
+roughly one false positive in five cells (§10).
+
+One embedding-side lever, kept separate per §36: moving the carrier from a 2×2 to a
+4×4 chip. At matched frame PSNR *and* better local perceptual metrics it roughly
+doubles margin on most attacks, converts blur σ2.0 from a miss into a comfortable pass,
+and recovers every bit at CRF 28 where the 2×2 chip returns chance. It is a trade curve
+rather than a free win, and §21 gives it in full.
 
 Machine learning belongs in exactly one place first — **learned host
 suppression in front of the correlator** — and explicitly *not* where §25
@@ -895,7 +912,7 @@ First full sweep: 30 attacks × 3 cases, 128/L1 `α`=3, 20 frames, scale search 
 scored against the **calibrated** threshold of §10 (`S₁` ≥ 17.76). Full table in
 `FINDINGS.md`, raw rows in `findings.jsonl`.
 
-**17 of 30 attacks recover the exact 32-bit payload, with zero false positives and no
+**18 of 30 attacks recover the exact 32-bit payload, with zero false positives and no
 false attributions.**
 
 | passes exactly | `S₁` |
