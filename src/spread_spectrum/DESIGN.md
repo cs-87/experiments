@@ -385,6 +385,38 @@ An acceptance threshold of 5.5–6 buys a large false-positive margin while
 staying far below the H₁ score. The multiplicity **must** be paid for: a naive
 3σ threshold on the best of 200 000 fires constantly.
 
+**S₄ — the per-video decoy null.** Read the same clip with `N` decoy keys and require
+the true key's `S₁` to be an outlier against them. **This is the only control that
+actually works at every clip length and every attack**, and the two below are why it
+is needed.
+
+Measured null against observation count, decoy keys on a marked clip:
+
+| attack | frames | observations | H₀ mean | H₀ max | **H₁, true key** | bits |
+|---|---|---|---|---|---|---|
+| clean | 20 | 960 | 5.67 | 6.96 | 59.2 | 32/32 |
+| clean | 60 | 2 880 | 6.41 | 7.35 | 125.2 | 32/32 |
+| clean | 200 | 9 600 | 12.51 | **19.07** | 174.4 | 32/32 |
+| CRF 28 | 20 | 960 | 5.90 | 7.96 | 3.6 | 24/32 |
+| CRF 28 | 60 | 2 880 | 7.16 | 9.31 | 6.8 | 14/32 |
+| CRF 28 | 200 | 9 600 | 14.00 | 18.85 | **17.73** | 24/32 |
+
+Two things fall out. First, **the null grows as ≈√M**, so `H₀ max` at 200 frames
+(19.07) exceeds the threshold calibrated at 8 frames (17.76) — a fixed threshold cannot
+serve every clip length. The mechanism is exactly the correlation §24 flagged: with
+per-observation correlation `ρ`, the true variance of the weighted mean plateaus near
+`σ²ρ` while the sandwich estimator keeps reporting `σ²/M`, so a standardised null grows
+like `√(Mρ)`. Second, and decisively, **at CRF 28 over 200 frames the true key scores
+17.73 against its own null of 14.00 ± mean and 18.85 max** — it is inside the null.
+That "detection" was never a detection, and no threshold read off other footage could
+have known.
+
+Decoy keys are the right null because they see *this* clip: same content, same attack,
+same selection, same aggregation, same observation count. Everything that inflates the
+true key's score inflates theirs. Measured on a marked 200-frame clip, the true key
+scored 174.4 against decoys spanning 8.9–19.1. It costs `(1+N)×` the correlation pass,
+in a single pass over the video, and it is worth it — see §23 for how to make it rare.
+
 **S₃ — split-half agreement.** Decode two disjoint halves of the frames and require
 them to return the same ID.
 
@@ -403,6 +435,13 @@ temporal split would confound "different content" with "independent noise", wher
 parity leaves both halves with the same content distribution and the same length. It
 costs two extra GEMMs and no extra video decoding, because the per-frame evidence is
 already held.
+
+It catches noise-driven partial recovery cleanly — all three of the CRF 28/32/36
+false attributions above were rejected, and the CRF 23 true positive kept. It does
+**not** catch content-driven bias: of six decoy keys on a marked 200-frame clip, five
+disagreed across halves and were rejected, but **one agreed and was accepted**. Both
+halves see the same scene, so a bias that comes from content rather than from noise
+reproduces in both. That residual is what S₄ exists for.
 
 **S₂ — evidence energy.** `S₂ = Σ_k ĉ_k²/σ̂²`, which is **codeword-independent**:
 χ²₃₂ under H₀, non-central χ²₃₂ under H₁. It answers "is *a* watermark present"
@@ -1104,6 +1143,22 @@ An 8-PRN first pass for localisation followed by the full 32 only at surviving
 peaks cuts the dominant term ~4× at no measured cost in accuracy — worth doing if
 CPU-only deployment is needed.
 
+**Making the per-video decoy null affordable.** S₄ (§10) costs `(1+N)×` the correlator,
+which is the single largest cost in the system. It does not have to run on every clip.
+The true key's `S₁` separates into three bands, and only the middle one is in doubt:
+
+| `S₁` | action | cost |
+|---|---|---|
+| far above any observed null (say > 60) | accept | 1× |
+| far below (say < 10) | reject | 1× |
+| in between | run S₄ with `N` = 5–8 | (1+N)× |
+
+Measured, the bands are wide: genuine unattacked and lightly-compressed detections came
+in at 25–174, and every decoy key measured below 20. The expensive path is for the cases
+that actually need adjudicating — heavy compression, marginal clips — and those are
+exactly the cases where being wrong matters most. Band edges must come from the same
+calibration run that sets the thresholds, not from these numbers, which are one clip.
+
 ---
 
 ## 24. Failure modes
@@ -1119,7 +1174,9 @@ CPU-only deployment is needed.
 | Correlated host across patches | patches on similar content give correlated `ν`, so `M_eff` overstates independence | measured: lag-1 autocorrelation of frame-level evidence is 0.069, so frames are effectively independent; within-frame inter-patch correlation is still unmeasured | **partly measured** |
 | Non-diagonal evidence covariance under misalignment | orthogonality holds in the aligned basis only | measure `Cov(c)` versus shift; add Mahalanobis if material | **open** |
 | Non-Gaussian host tails | the `√(2 ln N)` null is optimistic — measured 1.73× on `S₂` | empirical calibration (§10) | **measured, fixed** |
-| **Threshold vs observation count** | at 200 frames, CRF-28/32/36 cells reported `S₁` = 15.5–17.7 with the payload at chance. Either the null grows with `M` or the standard error shrinks faster than 1/√`M` | the 8-frame calibrated threshold (17.76) happens to exclude all three, but the threshold must be calibrated *per observation count*, not once | **being measured** |
+| **Threshold vs observation count** | measured: the null grows as ≈√`M`, so `H₀ max` reaches 19.07 at 200 frames against a threshold of 17.76 calibrated at 8. Positive correlation between observations makes the true variance of the mean plateau at `σ²ρ` while the sandwich estimator keeps reporting `σ²/M` | the per-video decoy null (§10, S₄), which is immune because the decoys share the clip's `M` and its correlation. A correlation-aware standard error (frame-clustered or block bootstrap) would be the other route | **measured, fixed by S₄** |
+| **Partial recovery returning a wrong ID** | some bits recovered, the rest at chance; the search over 200 000 finds a codeword fitting the survivors and the noise | S₃ split-half, then S₄ | **measured, fixed** |
+| **Content-driven bias surviving split-half** | both halves see the same scene, so a content-driven direction reproduces in both — 1 of 6 decoy keys slipped through | S₄ only | **measured, fixed by S₄** |
 | Collusion / averaging attack | the same `W` is in every patch of every frame, so averaging many patches recovers it | out of scope (§21 is digital attacks) but a real security property worth recording | **noted** |
 | Whitener ranking flips under compression | §6's ranking is a no-attack ranking | re-measure per condition (Phase E) | **open** |
 | **Selection bias at located sites** | sites are chosen by maximising the statistic they are then judged on | rank-aware order-statistic null (§10) | **measured, fixed** |

@@ -63,6 +63,8 @@ class DecodeResult:
     m_eff: float
     total_weight: float = 0.0
     split_half_agrees: bool = None   # None = not checked
+    decoy_z: float = None            # S1 vs the same clip read with decoy keys
+    decoy_s1: list = field(default_factory=list)
     accepted: bool = False
     reason: str = ""
     thresholds: dict = field(default_factory=dict)
@@ -72,6 +74,8 @@ class DecodeResult:
         split = ("" if self.split_half_agrees is None
                  else "  halves agree" if self.split_half_agrees
                  else "  HALVES DISAGREE")
+        if self.decoy_z is not None:
+            split += f"  decoy z={self.decoy_z:.1f}"
         return (f"{verdict}  S1={self.s1:.2f} (2nd {self.s1_second:.2f}, "
                 f"margin {self.margin:.2f})  S2={self.s2:.1f}  "
                 f"min|z|={self.min_abs_z:.2f}  obs={self.n_obs} "
@@ -148,7 +152,8 @@ class WatermarkHypothesisTester:
         return cls(n_codewords, fpr=fpr, s1=t["s1_empirical_gumbel"],
                    s2=t["s2_empirical_scaled_chi2"])
 
-    def __init__(self, n_codewords, n_bits=32, fpr=1e-6, s1=None, s2=None):
+    def __init__(self, n_codewords, n_bits=32, fpr=1e-6, s1=None, s2=None,
+                 decoy_z_threshold=8.0):
         self.n_codewords = int(n_codewords)
         self.fpr = float(fpr)
         # Bonferroni over the codebook: the best of N hypotheses is being tested, so
@@ -157,6 +162,7 @@ class WatermarkHypothesisTester:
             norm.isf(self.fpr / self.n_codewords))
         self.s2_threshold = float(s2) if s2 is not None else float(
             chi2.isf(self.fpr, n_bits))
+        self.decoy_z_threshold = float(decoy_z_threshold)
 
     def __repr__(self):
         return (f"WatermarkHypothesisTester(N={self.n_codewords:,}, fpr={self.fpr:g}, "
@@ -168,6 +174,18 @@ class WatermarkHypothesisTester:
         if result.total_weight <= 0:
             result.accepted = False
             result.reason = "no site cleared the null for its selection rank"
+            return result
+        if result.decoy_z is not None and result.decoy_z < self.decoy_z_threshold:
+            # The per-video null. Decoy keys read the SAME clip through the SAME attack
+            # with the SAME selection and aggregation, so whatever content-driven bias
+            # inflates the true key's score inflates theirs too -- which a threshold
+            # calibrated on other footage cannot know about. Measured on a marked
+            # 200-frame clip: the true key scored 174.4 against decoys spanning
+            # 8.9-19.1, and one of those six decoys had cleared the fixed threshold
+            # with its halves agreeing. Against the per-video null it is nowhere near.
+            result.accepted = False
+            result.reason = (f"score not an outlier against this clip's own decoy-key "
+                             f"null (z={result.decoy_z:.1f})")
             return result
         if result.split_half_agrees is False:
             # Partial recovery is the dangerous failure mode, not absence. With some

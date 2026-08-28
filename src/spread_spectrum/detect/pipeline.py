@@ -13,6 +13,7 @@ DetectorConfig -- plus the list of valid IDs.
 """
 
 import argparse
+import dataclasses
 import itertools
 import sys
 import time
@@ -50,6 +51,8 @@ class DetectorConfig:
     fpr: float = 1e-6
     calibration: str = None   # eval/calibrate.py output; strongly preferred
     split_half_min_frames: int = 4
+    decoys: int = 0            # per-video null from N decoy keys; 0 = off
+    decoy_z: float = 8.0
     device: str = None
     geometry: str = "none"      # "none" | "scale" | "scale+rotation"
     geometry_frames: int = 1
@@ -106,6 +109,15 @@ class Detector:
                 self.cfg.calibration, len(codeword_set), fpr=self.cfg.fpr)
             if self.cfg.calibration
             else WatermarkHypothesisTester(len(codeword_set), fpr=self.cfg.fpr))
+        self.tester.decoy_z_threshold = self.cfg.decoy_z
+
+        # Decoy keys for the per-video null. Seeds are derived from the real one so a
+        # given deployment always draws the same null and results are reproducible.
+        self.decoys = []
+        for i in range(self.cfg.decoys):
+            d = dataclasses.replace(self.cfg, decoys=0,
+                                    seed=self.cfg.seed * 7919 + 104729 * (i + 1))
+            self.decoys.append(Detector(codeword_set, d))
 
     def __repr__(self):
         return (f"Detector({self.cfg.square_size}px/L{self.cfg.level}, "
@@ -157,6 +169,8 @@ class Detector:
         question asked of it.
         """
         agg = EvidenceAggregator(huber_c=self.cfg.huber_c)
+        decoy_aggs = [EvidenceAggregator(huber_c=self.cfg.huber_c)
+                      for _ in self.decoys]
         per_frame, t0 = [], time.time()
         frames = iter(frames)
         if self.cfg.geometry != "none" and self.geometry is None:
@@ -169,6 +183,12 @@ class Detector:
             ev = self.frame_evidence(luma, idx)
             per_frame.append(ev)
             agg.add(ev)
+            # Same frame, same geometry, same everything but the key -- so the decoys
+            # see whatever this clip's content does to the statistic. One pass over the
+            # video, not one per key.
+            for d, dagg in zip(self.decoys, decoy_aggs):
+                d.geometry = self.geometry
+                dagg.add(d.frame_evidence(luma, idx))
             if progress and sys.stdout.isatty():
                 print(f"\rframe {idx}: {len(ev)} sites, {len(agg)} total", end="")
         if progress:
@@ -180,6 +200,14 @@ class Detector:
         result = self.decoder.decode(agg.result())
         if len(per_frame) >= self.cfg.split_half_min_frames:
             result.split_half_agrees = self.split_half_agrees(per_frame)
+        if decoy_aggs:
+            s1 = [d.decoder.decode(a.result()).s1
+                  for d, a in zip(self.decoys, decoy_aggs) if len(a)]
+            if len(s1) >= 3:
+                med = float(np.median(s1))
+                mad = 1.4826 * float(np.median(np.abs(np.asarray(s1) - med)))
+                result.decoy_s1 = [round(v, 2) for v in s1]
+                result.decoy_z = float((result.s1 - med) / max(mad, 1e-9))
         return self.tester.test(result), per_frame
 
     def split_half_agrees(self, per_frame):
@@ -257,6 +285,10 @@ def main(argv=None):
     ap.add_argument("--calibration", default=None,
                     help="eval/calibrate.py JSON; use it -- the parametric "
                          "thresholds measured ~1 false positive in 5 cells")
+    ap.add_argument("--decoys", type=int, default=0,
+                    help="calibrate the null on THIS clip using N decoy keys. "
+                         "Costs (1+N)x the correlation pass and is the only "
+                         "control that adapts to the clip's own content")
     ap.add_argument("--device", default=None)
     ap.add_argument("--geometry", default="none",
                     choices=["none", "scale", "scale+rotation"])
@@ -273,7 +305,8 @@ def main(argv=None):
                          level=args.level, whiten=args.whiten,
                          weighting=args.weighting, max_sites=args.max_sites,
                          fpr=args.fpr, device=args.device, geometry=args.geometry,
-                         calibration=args.calibration)
+                         calibration=args.calibration,
+                         decoys=args.decoys)
     det = Detector(ids, cfg)
     print(det)
     result, per_frame = det.detect(args.video, args.max_frames, args.stride,
