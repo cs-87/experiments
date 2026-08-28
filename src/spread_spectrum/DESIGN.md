@@ -983,16 +983,23 @@ with SSIM identical. Only flicker is marginally worse.
 
 ### And what that buys, end to end
 
-| config | frame PSNR | CRF 23 | CRF 28 |
-|---|---|---|---|
-| 128/L1 `α`=3 | 56.11 | `S₁` 25.1, 32/32 ✓ | `S₁` 5.4, **16/32 — noise** |
-| 256/L2 `α`=3.75 | 55.07 | `S₁` 24.5, 32/32 ✓ | `S₁` 7.5, **32/32 bits, below threshold** |
-| 256/L2 `α`=6 | 50.56 | `S₁` 82.3, 32/32 ✓ | `S₁` 42.1, 32/32 ✓ |
+20 frames, calibrated threshold `S₁` ≥ 17.76. `S₁` first, then bits recovered:
 
-Read the middle row carefully: at matched frame PSNR the 4×4 chip **gets every bit
-right at CRF 28**, where the 2×2 chip returns chance. The payload is there; what is
-missing is the confidence to accept it at a 1e-6 false-positive rate on 20 frames, and
-`S₁` grows as √frames.
+| attack | 128/L1 `α`=3 (56.1 dB) | **256/L2 `α`=3.75 (55.1 dB)** | 256/L2 `α`=6 (50.6 dB) |
+|---|---|---|---|
+| clean | 43.8 · 32/32 ✓ | **74.8 · 32/32 ✓** | 117.7 · 32/32 ✓ |
+| H.264 CRF 23 | 25.1 · 32/32 ✓ | 24.5 · 32/32 ✓ | 82.3 · 32/32 ✓ |
+| **H.264 CRF 28** | 5.4 · **16/32 — chance** | 7.5 · **32/32 bits, below threshold** | **42.1 · 32/32 ✓** |
+| H.264 CRF 32 | 4.7 · 18/32 ✗ | 2.8 · 26/32 ✗ | 5.3 · 24/32 ✗ |
+| **blur σ2.0** | 13.4 · 32/32, **below threshold** | **52.4 · 32/32 ✓** | 105.5 · 32/32 ✓ |
+| 1080p → 540p | 37.8 · 32/32 ✓ | **74.3 · 32/32 ✓** | 118.9 · 32/32 ✓ |
+
+The middle column is the honest comparison — same frame PSNR, *better* local
+perceptual metrics — and it is better or equal on five of six rows. It roughly doubles
+margin on clean, 540p and blur, converts blur σ2.0 from a miss into a comfortable pass,
+and **gets every bit right at CRF 28 where the 2×2 chip returns chance**. What is
+missing at CRF 28 is only the confidence to accept at a 1e-6 false-positive rate on 20
+frames, and `S₁` grows as √frames. CRF 32 defeats all three.
 
 **Amplitude cannot be traded down freely, and this was not obvious.** `S₁` at CRF 23
 is 82.3 at `α`=6 and 24.5 at `α`=3.75 — a factor of 3.4 for a factor of 1.6 in
