@@ -39,6 +39,7 @@ d_min = 6 codebook the runner-up is six bits away and the margin becomes informa
 which is a second reason to design the ID set rather than draw it.
 """
 
+import pathlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -124,6 +125,23 @@ class WatermarkHypothesisTester:
     clips spanning the content range (eval/calibrate.py). Passing them in explicitly
     is how that calibration gets used.
     """
+
+    @classmethod
+    def from_calibration(cls, path, n_codewords, fpr=1e-6, key="unmarked"):
+        """
+        Build a tester from eval/calibrate.py's output.
+
+        This is the intended way to construct one. The parametric thresholds below are
+        derived from a Gaussian/chi-square null and the measured null is not that null:
+        on real 1080p the observed S2 runs 1.73x the chi2_32 mean, and the parametric
+        S1 threshold at a nominal 1e-6 measured a false-positive rate closer to one
+        cell in five. The empirical threshold came out 2.6x higher.
+        """
+        import json
+        rep = json.loads(pathlib.Path(path).read_text())
+        t = rep[key]["thresholds"][f"{fpr:g}"]
+        return cls(n_codewords, fpr=fpr, s1=t["s1_empirical_gumbel"],
+                   s2=t["s2_empirical_scaled_chi2"])
 
     def __init__(self, n_codewords, n_bits=32, fpr=1e-6, s1=None, s2=None):
         self.n_codewords = int(n_codewords)

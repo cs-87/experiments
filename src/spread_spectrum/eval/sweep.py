@@ -151,21 +151,80 @@ def append_row(path, row):
         f.write(json.dumps(row) + "\n")
 
 
-def render_table(jsonl, out):
-    rows = [json.loads(l) for l in jsonl.read_text().splitlines() if l.strip()]
-    head = "| " + " | ".join(n for n, _ in COLUMNS) + " |"
-    rule = "|" + "|".join("-" * (w + 2) for _, w in COLUMNS) + "|"
-    body = []
+def render_table(jsonl, out, s1_threshold=None):
+    """
+    Regenerate FINDINGS.md from the JSONL.
+
+    Grouped by embedding config and laid out with the three cases side by side, because
+    a cell is only meaningful next to its own controls: "32/32 recovered" says nothing
+    until you know the unmarked clip on the same attack came back NO_WATERMARK.
+
+    s1_threshold, when given, re-scores every cell against a calibrated acceptance
+    threshold instead of the parametric one the run used. That matters -- the
+    parametric threshold measured a false-positive rate of roughly one cell in five,
+    and eval/calibrate.py puts the real threshold at about 2.6x higher.
+    """
+    rows = []
+    for line in jsonl.read_text().splitlines():
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass                              # a half-written final line
+
+    groups = {}
     for r in rows:
-        cells = []
-        for name, _ in COLUMNS:
-            v = r.get(name)
-            cells.append("" if v is None else
-                         ("yes" if v is True else "no" if v is False else str(v)))
-        body.append("| " + " | ".join(cells) + " |")
-    out.write_text("# Spread-spectrum detector: measured results\n\n"
-                   "Regenerated from `findings.jsonl`; edit that, not this.\n\n"
-                   + "\n".join([head, rule] + body) + "\n")
+        key = (r.get("tag"), r.get("square_size"), r.get("level"), r.get("alpha"),
+               r.get("frames"))
+        groups.setdefault(key, {}).setdefault(r.get("attack"), {})[r.get("case")] = r
+
+    def verdict(r, expect_id):
+        if r is None:
+            return "-"
+        acc = (r["s1"] >= s1_threshold) if s1_threshold is not None else r["accept"]
+        if expect_id is None:                                    # unmarked control
+            return "**FALSE POSITIVE**" if acc else "ok"
+        if not acc:
+            return "missed"
+        return "ok" if r.get("id_ok" if expect_id else "exact") else "**WRONG ID**"
+
+    lines = ["# Spread-spectrum detector: measured results", "",
+             "Regenerated from `findings.jsonl` by `eval/sweep.py`. Edit the JSONL, "
+             "not this file.", ""]
+    if s1_threshold is not None:
+        lines += [f"Scored against a **calibrated** acceptance threshold of "
+                  f"S1 >= {s1_threshold:.2f} (see `calibration.json`), not the "
+                  f"parametric one.", ""]
+    for key in sorted(groups, key=lambda k: (str(k[0]),)):
+        tag, sq, lv, al, nf = key
+        chip = (1 << lv) if lv else "?"
+        lines += [f"## {tag} — patch {sq} / DWT L{lv} / alpha {al} "
+                  f"(chip {chip}x{chip} px), {nf} frames", "",
+                  "| attack | scale | marked: bits | marked: S1 | marked | "
+                  "unmarked: S1 | unmarked | other ID: S1 | other ID |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        passes = total = 0
+        for att in sorted(groups[key]):
+            c = groups[key][att]
+            m, u, o = c.get("marked"), c.get("unmarked"), c.get("other")
+            if m is None:
+                continue
+            total += 1
+            vm = verdict(m, True)
+            if vm == "ok":
+                passes += 1
+            lines.append(
+                f"| `{att}` | {m.get('scale', '')} | {m.get('bcr', '?')}/32 | "
+                f"{m['s1']:.1f} | {vm} | "
+                f"{f'{u[chr(115)+chr(49)]:.1f}' if u else ''} | {verdict(u, None)} | "
+                f"{f'{o[chr(115)+chr(49)]:.1f}' if o else ''} | {verdict(o, True)} |")
+        fps = sum(1 for a in groups[key]
+                  for cs in [groups[key][a].get("unmarked")]
+                  if cs and ((cs["s1"] >= s1_threshold) if s1_threshold is not None
+                             else cs["accept"]))
+        lines += ["", f"**{passes}/{total} attacks recovered the exact payload; "
+                      f"{fps} false positive(s) on the unmarked control.**", ""]
+    out.write_text("\n".join(lines) + "\n")
 
 
 def cmd_sweep(args):

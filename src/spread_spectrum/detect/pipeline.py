@@ -48,6 +48,7 @@ class DetectorConfig:
     ring_inner: int = 3
     ring_outer: int = 14
     fpr: float = 1e-6
+    calibration: str = None   # eval/calibrate.py output; strongly preferred
     device: str = None
     geometry: str = "none"      # "none" | "scale" | "scale+rotation"
     geometry_frames: int = 1
@@ -99,7 +100,11 @@ class Detector:
         self.geometry = None                 # (scale, rotation), locked on first use
         self.geometry_table = None
         self.decoder = CodewordDecoder(codeword_set)
-        self.tester = WatermarkHypothesisTester(len(codeword_set), fpr=self.cfg.fpr)
+        self.tester = (
+            WatermarkHypothesisTester.from_calibration(
+                self.cfg.calibration, len(codeword_set), fpr=self.cfg.fpr)
+            if self.cfg.calibration
+            else WatermarkHypothesisTester(len(codeword_set), fpr=self.cfg.fpr))
 
     def __repr__(self):
         return (f"Detector({self.cfg.square_size}px/L{self.cfg.level}, "
@@ -213,6 +218,9 @@ def main(argv=None):
     ap.add_argument("--weighting", default="wiener")
     ap.add_argument("--max-sites", type=int, default=48)
     ap.add_argument("--fpr", type=float, default=1e-6)
+    ap.add_argument("--calibration", default=None,
+                    help="eval/calibrate.py JSON; use it -- the parametric "
+                         "thresholds measured ~1 false positive in 5 cells")
     ap.add_argument("--device", default=None)
     ap.add_argument("--geometry", default="none",
                     choices=["none", "scale", "scale+rotation"])
@@ -228,7 +236,8 @@ def main(argv=None):
     cfg = DetectorConfig(seed=args.seed, square_size=args.square_size,
                          level=args.level, whiten=args.whiten,
                          weighting=args.weighting, max_sites=args.max_sites,
-                         fpr=args.fpr, device=args.device, geometry=args.geometry)
+                         fpr=args.fpr, device=args.device, geometry=args.geometry,
+                         calibration=args.calibration)
     det = Detector(ids, cfg)
     print(det)
     result, per_frame = det.detect(args.video, args.max_frames, args.stride,
