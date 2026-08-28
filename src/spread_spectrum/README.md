@@ -3,8 +3,10 @@
 32 bits carried by 32 exactly-orthogonal PRNs, summed with the payload's signs,
 RMS-normalised, and added to the DWT LL of every SIFT patch of every frame.
 
-Start with **[DESIGN.md](DESIGN.md)** — it answers `prompt.md` in full and every number
-in it was measured against this code. This file is just the map.
+Start with **[REPORT.md](REPORT.md)** — what was built, what was measured, what is
+left. **[DESIGN.md](DESIGN.md)** is the full 26-section technical document `prompt.md`
+asks for; **[FINDINGS.md](FINDINGS.md)** is the measured attack table. This file is just
+the map of the code.
 
 ## Layout
 
