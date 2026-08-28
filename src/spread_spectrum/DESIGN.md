@@ -385,6 +385,25 @@ An acceptance threshold of 5.5–6 buys a large false-positive margin while
 staying far below the H₁ score. The multiplicity **must** be paid for: a naive
 3σ threshold on the best of 200 000 fires constantly.
 
+**S₃ — split-half agreement.** Decode two disjoint halves of the frames and require
+them to return the same ID.
+
+This exists because of a failure the other two statistics cannot see, and which only
+showed up once long clips were tested. **Absence was never the dangerous case; partial
+presence is.** At H.264 CRF 28 over 200 frames the detector reported `S₁` = 17.7 with
+**24 of 32 bits correct** — some bits genuinely recovered, the rest at chance. The
+search over 200 000 hypotheses then finds a codeword that fits both the surviving
+evidence *and* the noise, and it clears a threshold calibrated against H₀ because it is
+not an H₀ event. A confidently wrong ID is worse than a refusal.
+
+Two disjoint halves landing on the same *wrong* ID has probability of order 1/200 000;
+landing on the same right one is what a real mark does. The split is by frame
+**parity**, not into a first and second half — content drifts across a clip and a
+temporal split would confound "different content" with "independent noise", whereas
+parity leaves both halves with the same content distribution and the same length. It
+costs two extra GEMMs and no extra video decoding, because the per-frame evidence is
+already held.
+
 **S₂ — evidence energy.** `S₂ = Σ_k ĉ_k²/σ̂²`, which is **codeword-independent**:
 χ²₃₂ under H₀, non-central χ²₃₂ under H₁. It answers "is *a* watermark present"
 without reference to the ID list, so it is not inflated by the size of that
